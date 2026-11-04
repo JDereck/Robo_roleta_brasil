@@ -67,13 +67,10 @@ async function fetchAndProcess() {
 
   isRunning = true;
   try {
-    // Endpoint publico de estatisticas da mesa (sem exigencia de sessao autenticada)
     const historyUrl = `https://games.pragmaticplaylive.net/api/ui/stats?noOfGames=500&tableId=${TABLE_ID}`;
     
     const res = await http.get(historyUrl);
     const data = res.data;
-    
-    // A Pragmatic as vezes retorna o historico em 'history' ou direto no array de estatisticas
     const historyList = data.history || data.stats || (Array.isArray(data) ? data : null);
 
     if (!historyList || !Array.isArray(historyList)) {
@@ -81,4 +78,65 @@ async function fetchAndProcess() {
       return { status: 'invalid_response', data };
     }
 
-    const validSpins = historyList.map(parseSpin).filter(Boolean).reverse
+    const validSpins = historyList.map(parseSpin).filter(Boolean).reverse();
+    if (validSpins.length === 0) return { status: 'empty_history' };
+
+    if (!isSeeded) {
+      validSpins.forEach(s => rememberId(s.gameId));
+      lastGameId = validSpins[validSpins.length - 1].gameId;
+      isSeeded = true;
+
+      console.log(`[SEED INICIAL] ${validSpins.length} rodadas carregadas. Ultima rodada: ID ${lastGameId} -> Numero ${validSpins[validSpins.length - 1].number}`);
+
+      if (GAS_WEBHOOK_URL) {
+        await sendToWebhook({ type: 'SEED', spins: validSpins });
+      }
+      return { status: 'seeded', count: validSpins.length };
+    }
+
+    const newSpins = validSpins.filter(s => !processedIds.has(s.gameId));
+    if (newSpins.length === 0) {
+      return { status: 'no_new_spin', lastGameId };
+    }
+
+    for (const spin of newSpins) {
+      console.log(`🎰 [NOVA RODADA] ID: ${spin.gameId} | Numero: ${spin.number} (${spin.rawResult}) | Hora: ${spin.timestamp}`);
+      const ok = await sendToWebhook({ type: 'NEW_SPIN', spin });
+      if (ok) {
+        rememberId(spin.gameId);
+        lastGameId = spin.gameId;
+      }
+    }
+
+    return { status: 'processed', newCount: newSpins.length, lastGameId };
+  } catch (err) {
+    console.error(`[ERRO CAPTURA] ${err.message}`);
+    return { status: 'error', message: err.message };
+  } finally {
+    isRunning = false;
+  }
+}
+
+setInterval(fetchAndProcess, POLL_INTERVAL_MS);
+
+app.get('/', (req, res) => {
+  res.json({
+    service: 'Monitor Roleta Europeia',
+    status: 'online',
+    tableId: TABLE_ID,
+    isSeeded,
+    lastGameId,
+    processedCount: processedIds.size,
+    timestamp: getFortalezaTimestamp()
+  });
+});
+
+app.get('/health', async (req, res) => {
+  const result = await fetchAndProcess();
+  res.status(200).json({ ok: true, timestamp: getFortalezaTimestamp(), poll: result });
+});
+
+app.listen(PORT, () => {
+  console.log(`🚀 Servidor rodando na porta ${PORT}`);
+  fetchAndProcess();
+});
