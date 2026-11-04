@@ -9,7 +9,6 @@ const TABLE_ID = process.env.TABLE_ID || 'rwbrzportrwa16rg';
 const GAS_WEBHOOK_URL = process.env.GAS_WEBHOOK_URL || '';
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS) || 10000;
 
-// Token de sessão fixo extraído da sua sessão ativa
 let currentSessionId = process.env.JSESSIONID || '55548_121027_BRL^237^20261104T194142';
 
 let isRunning = false;
@@ -71,18 +70,22 @@ async function fetchAndProcess() {
   isRunning = true;
   try {
     const encodedSession = encodeURIComponent(currentSessionId);
-    // Endpoint autenticado correto da Pragmatic Play
     const historyUrl = `https://games.pragmaticplaylive.net/api/ui/statisticHistory?JSESSIONID=${encodedSession}&numberOfGames=500&tableId=${TABLE_ID}`;
     
     const res = await http.get(historyUrl);
     const data = res.data;
 
-    if (!data || String(data.errorCode) !== '0' || !Array.isArray(data.history)) {
-      console.warn(`[AVISO API] Resposta inesperada:`, JSON.stringify(data).slice(0, 200));
+    // Log para inspecionar o que a API respondeu
+    console.log(`[API DADOS] Recebido tipo:`, typeof data, Array.isArray(data) ? 'Array' : 'Objeto');
+
+    const historyList = data.history || (Array.isArray(data) ? data : null);
+
+    if (!historyList || !Array.isArray(historyList)) {
+      console.warn(`[AVISO API] Estrutura inesperada:`, JSON.stringify(data).slice(0, 300));
       return { status: 'invalid_response', data };
     }
 
-    const validSpins = data.history.map(parseSpin).filter(Boolean).reverse();
+    const validSpins = historyList.map(parseSpin).filter(Boolean).reverse();
     if (validSpins.length === 0) return { status: 'empty_history' };
 
     if (!isSeeded) {
