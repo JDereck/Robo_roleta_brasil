@@ -9,6 +9,9 @@ const TABLE_ID = process.env.TABLE_ID || 'rwbrzportrwa16rg';
 const GAS_WEBHOOK_URL = process.env.GAS_WEBHOOK_URL || '';
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS) || 10000;
 
+// Token real extraído da sessão ativa do seu navegador
+let currentSessionId = process.env.JSESSIONID || '55548_121027_BRL^237^20261104T194142';
+
 let isRunning = false;
 let isSeeded = false;
 let lastGameId = null;
@@ -64,21 +67,26 @@ async function sendToWebhook(payload) {
 
 async function fetchAndProcess() {
   if (isRunning) return { status: 'skipped', reason: 'locked' };
+  if (!currentSessionId) return { status: 'error', reason: 'missing_jsessionid' };
 
   isRunning = true;
   try {
-    const historyUrl = `https://games.pragmaticplaylive.net/api/ui/stats?noOfGames=500&tableId=${TABLE_ID}`;
-    
-    const res = await http.get(historyUrl);
-    const data = res.data;
-    const historyList = data.history || data.stats || (Array.isArray(data) ? data : null);
+    const encodedSession = encodeURIComponent(currentSessionId);
+    const historyUrl = `https://games.pragmaticplaylive.net/api/ui/statisticHistory?JSESSIONID=${encodedSession}&numberOfGames=500&tableId=${TABLE_ID}`;
+    const balanceUrl = `https://games.pragmaticplaylive.net/api/wallet/balance?JSESSIONID=${encodedSession}`;
 
-    if (!historyList || !Array.isArray(historyList)) {
-      console.warn(`[AVISO API] Formato inesperado:`, JSON.stringify(data).slice(0, 200));
+    const [historyRes] = await Promise.all([
+      http.get(historyUrl),
+      http.get(balanceUrl).catch(() => null)
+    ]);
+
+    const data = historyRes.data;
+    if (!data || String(data.errorCode) !== '0' || !Array.isArray(data.history)) {
+      console.warn(`[AVISO API] Resposta inesperada:`, JSON.stringify(data).slice(0, 200));
       return { status: 'invalid_response', data };
     }
 
-    const validSpins = historyList.map(parseSpin).filter(Boolean).reverse();
+    const validSpins = data.history.map(parseSpin).filter(Boolean).reverse();
     if (validSpins.length === 0) return { status: 'empty_history' };
 
     if (!isSeeded) {
@@ -134,6 +142,16 @@ app.get('/', (req, res) => {
 app.get('/health', async (req, res) => {
   const result = await fetchAndProcess();
   res.status(200).json({ ok: true, timestamp: getFortalezaTimestamp(), poll: result });
+});
+
+app.get('/set-session', async (req, res) => {
+  const raw = req.query.id || req.query.url || '';
+  if (!raw) return res.status(400).json({ error: 'Informe ?id=SEU_TOKEN' });
+  currentSessionId = raw.trim();
+  isSeeded = false;
+  processedIds.clear();
+  const test = await fetchAndProcess();
+  res.json({ message: 'Token atualizado com sucesso', result: test });
 });
 
 app.listen(PORT, () => {
