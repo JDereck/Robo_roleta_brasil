@@ -9,9 +9,6 @@ const TABLE_ID = process.env.TABLE_ID || 'rwbrzportrwa16rg';
 const GAS_WEBHOOK_URL = process.env.GAS_WEBHOOK_URL || '';
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS) || 10000;
 
-// Token padrão inicial
-let currentSessionId = process.env.JSESSIONID || '55548_121027_BRL^237^20261104T194142';
-
 let isRunning = false;
 let isSeeded = false;
 let lastGameId = null;
@@ -22,8 +19,8 @@ const http = axios.create({
   headers: {
     'User-Agent': 'Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Mobile Safari/537.36',
     'Accept': 'application/json, text/plain, */*',
-    'Origin': 'https://client.pragmaticplaylive.net',
-    'Referer': 'https://client.pragmaticplaylive.net/'
+    'Origin': 'https://blitz4.casino',
+    'Referer': 'https://blitz4.casino/'
   }
 });
 
@@ -47,15 +44,15 @@ async function fetchAndProcess() {
 
   isRunning = true;
   try {
-    const encodedSession = encodeURIComponent(currentSessionId);
-    const historyUrl = `https://games.pragmaticplaylive.net/api/ui/statisticHistory?JSESSIONID=${encodedSession}&numberOfGames=500&tableId=${TABLE_ID}`;
+    // Endpoint público otimizado para a mesa
+    const historyUrl = `https://games.pragmaticplaylive.net/api/ui/stats?noOfGames=500&tableId=${TABLE_ID}`;
     
     const res = await http.get(historyUrl);
     const data = res.data;
 
-    const historyList = data.history || (Array.isArray(data) ? data : null);
+    const historyList = data.history || data.stats || (Array.isArray(data) ? data : null);
     if (!historyList || !Array.isArray(historyList)) {
-      return { status: 'invalid_response' };
+      return { status: 'invalid_response', data };
     }
 
     const validSpins = historyList.map(item => {
@@ -77,7 +74,7 @@ async function fetchAndProcess() {
       lastGameId = validSpins[validSpins.length - 1].gameId;
       isSeeded = true;
 
-      console.log(`[SEED INICIAL] SUCESSO! ${validSpins.length} rodadas carregadas e enviadas para a planilha.`);
+      console.log(`[SEED INICIAL] SUCESSO! ${validSpins.length} rodadas carregadas.`);
       await sendToWebhook({ type: 'SEED', spins: validSpins });
       return { status: 'seeded', count: validSpins.length };
     }
@@ -94,9 +91,9 @@ async function fetchAndProcess() {
 
     return { status: 'processed', count: newSpins.length };
   } catch (err) {
-    const status = err.response ? err.response.status : 'ERRO';
-    console.error(`[ERRO CAPTURA] Status: ${status} | Mensagem: ${err.message}`);
-    return { status: 'error', code: status };
+    const errStatus = err.response ? err.response.status : 'ERRO';
+    console.error(`[ERRO CAPTURA] Status: ${errStatus} | Mensagem: ${err.message}`);
+    return { status: 'error', code: errStatus };
   } finally {
     isRunning = false;
   }
@@ -118,17 +115,6 @@ app.get('/', (req, res) => {
 app.get('/health', async (req, res) => {
   const result = await fetchAndProcess();
   res.status(200).json({ ok: true, timestamp: getFortalezaTimestamp(), poll: result });
-});
-
-// Rota para atualizar o token instantaneamente direto pelo navegador/tablet
-app.get('/set-session', async (req, res) => {
-  const raw = req.query.id || req.query.url || '';
-  if (!raw) return res.status(400).json({ error: 'Informe ?id=SEU_TOKEN' });
-  currentSessionId = raw.trim();
-  isSeeded = false;
-  processedIds.clear();
-  const test = await fetchAndProcess();
-  res.json({ message: 'Token atualizado com sucesso!', result: test });
 });
 
 app.listen(PORT, () => {
