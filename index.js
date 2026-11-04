@@ -1,123 +1,39 @@
 const express = require('express');
 const axios = require('axios');
+const cors = require('cors');
 
 const app = express();
 app.use(express.json());
+app.use(cors()); // Libera o CORS para o tablet enviar os dados direto do jogo
 
 const PORT = process.env.PORT || 3000;
-const TABLE_ID = process.env.TABLE_ID || 'rwbrzportrwa16rg';
 const GAS_WEBHOOK_URL = process.env.GAS_WEBHOOK_URL || '';
-const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS) || 10000;
 
-let isRunning = false;
-let isSeeded = false;
-let lastGameId = null;
-const processedIds = new Set();
-
-const http = axios.create({
-  timeout: 8000,
-  headers: {
-    'User-Agent': 'Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Mobile Safari/537.36',
-    'Accept': 'application/json, text/plain, */*',
-    'Origin': 'https://blitz4.casino',
-    'Referer': 'https://blitz4.casino/'
+// Endpoint para o script do tablet injetar o número capturado na tela
+app.post('/report-spin', async (req, res) => {
+  const { spin } = req.body;
+  if (!spin || spin.number === undefined) {
+    return res.status(400).json({ error: 'Dados inválidos' });
   }
+
+  console.log(`🎯 [CAPTURADO NO TABLET] Número: ${spin.number} | ID: ${spin.gameId}`);
+
+  if (GAS_WEBHOOK_URL) {
+    try {
+      await axios.post(GAS_WEBHOOK_URL, { type: 'NEW_SPIN', spin }, { timeout: 8000 });
+      console.log(`✅ [ENVIADO PARA PLANILHA] Número ${spin.number} gravado com sucesso!`);
+    } catch (err) {
+      console.error(`[ERRO REPASSE PLANILHA]`, err.message);
+    }
+  }
+
+  res.json({ success: true, received: spin });
 });
-
-function getFortalezaTimestamp() {
-  return new Date().toLocaleString('pt-BR', { timeZone: 'America/Fortaleza', hour12: false });
-}
-
-async function sendToWebhook(payload) {
-  if (!GAS_WEBHOOK_URL) return true;
-  try {
-    await axios.post(GAS_WEBHOOK_URL, payload, { timeout: 10000 });
-    return true;
-  } catch (err) {
-    console.error(`[ERRO WEBHOOK]`, err.message);
-    return false;
-  }
-}
-
-async function fetchAndProcess() {
-  if (isRunning) return { status: 'skipped', reason: 'locked' };
-
-  isRunning = true;
-  try {
-    // Endpoint público otimizado para a mesa
-    const historyUrl = `https://games.pragmaticplaylive.net/api/ui/stats?noOfGames=500&tableId=${TABLE_ID}`;
-    
-    const res = await http.get(historyUrl);
-    const data = res.data;
-
-    const historyList = data.history || data.stats || (Array.isArray(data) ? data : null);
-    if (!historyList || !Array.isArray(historyList)) {
-      return { status: 'invalid_response', data };
-    }
-
-    const validSpins = historyList.map(item => {
-      if (!item || !item.gameId || typeof item.gameResult !== 'string') return null;
-      const num = parseInt(item.gameResult.trim(), 10);
-      if (Number.isNaN(num) || num < 0 || num > 36) return null;
-      return {
-        gameId: String(item.gameId).trim(),
-        number: num,
-        rawResult: item.gameResult.trim(),
-        timestamp: getFortalezaTimestamp()
-      };
-    }).filter(Boolean).reverse();
-
-    if (validSpins.length === 0) return { status: 'empty_history' };
-
-    if (!isSeeded) {
-      validSpins.forEach(s => processedIds.add(s.gameId));
-      lastGameId = validSpins[validSpins.length - 1].gameId;
-      isSeeded = true;
-
-      console.log(`[SEED INICIAL] SUCESSO! ${validSpins.length} rodadas carregadas.`);
-      await sendToWebhook({ type: 'SEED', spins: validSpins });
-      return { status: 'seeded', count: validSpins.length };
-    }
-
-    const newSpins = validSpins.filter(s => !processedIds.has(s.gameId));
-    for (const spin of newSpins) {
-      console.log(`🎰 [NOVA RODADA] ID: ${spin.gameId} | Número: ${spin.number}`);
-      const ok = await sendToWebhook({ type: 'NEW_SPIN', spin });
-      if (ok) {
-        processedIds.add(spin.gameId);
-        lastGameId = spin.gameId;
-      }
-    }
-
-    return { status: 'processed', count: newSpins.length };
-  } catch (err) {
-    const errStatus = err.response ? err.response.status : 'ERRO';
-    console.error(`[ERRO CAPTURA] Status: ${errStatus} | Mensagem: ${err.message}`);
-    return { status: 'error', code: errStatus };
-  } finally {
-    isRunning = false;
-  }
-}
-
-setInterval(fetchAndProcess, POLL_INTERVAL_MS);
 
 app.get('/', (req, res) => {
-  res.json({
-    service: 'Monitor Roleta Europeia',
-    status: 'online',
-    isSeeded,
-    lastGameId,
-    processedCount: processedIds.size,
-    timestamp: getFortalezaTimestamp()
-  });
-});
-
-app.get('/health', async (req, res) => {
-  const result = await fetchAndProcess();
-  res.status(200).json({ ok: true, timestamp: getFortalezaTimestamp(), poll: result });
+  res.json({ service: 'Monitor Roleta Bridge', status: 'online' });
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 Servidor rodando na porta ${PORT}`);
-  fetchAndProcess();
+  console.log(`🚀 Servidor Bridge rodando na porta ${PORT}`);
 });
