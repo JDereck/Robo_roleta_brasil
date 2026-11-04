@@ -1,33 +1,36 @@
 const express = require('express');
 const axios = require('axios');
-const cors = require('cors');
 
 const app = express();
 app.use(express.json());
-app.use(cors()); // Libera o CORS para o tablet enviar os dados direto do jogo
 
 const PORT = process.env.PORT || 3000;
 const GAS_WEBHOOK_URL = process.env.GAS_WEBHOOK_URL || '';
 
-// Endpoint para o script do tablet injetar o número capturado na tela
-app.post('/report-spin', async (req, res) => {
-  const { spin } = req.body;
-  if (!spin || spin.number === undefined) {
-    return res.status(400).json({ error: 'Dados inválidos' });
-  }
+// Rota GET para o tablet reportar o número facilmente
+app.get('/report', async (req, res) => {
+  const num = req.query.num;
+  if (num === undefined) return res.status(400).json({ error: 'Falta o número ?num=' });
 
-  console.log(`🎯 [CAPTURADO NO TABLET] Número: ${spin.number} | ID: ${spin.gameId}`);
+  const spin = {
+    gameId: "tablet_" + Date.now(),
+    number: parseInt(num, 10),
+    rawResult: String(num),
+    timestamp: new Date().toLocaleString('pt-BR', { timeZone: 'America/Fortaleza' })
+  };
+
+  console.log(`🎯 [RECEBIDO DO TABLET] Número: ${num}`);
 
   if (GAS_WEBHOOK_URL) {
     try {
       await axios.post(GAS_WEBHOOK_URL, { type: 'NEW_SPIN', spin }, { timeout: 8000 });
-      console.log(`✅ [ENVIADO PARA PLANILHA] Número ${spin.number} gravado com sucesso!`);
+      console.log(`✅ [GRAVADO NA PLANILHA COM SUCESSO]`);
     } catch (err) {
       console.error(`[ERRO REPASSE PLANILHA]`, err.message);
     }
   }
 
-  res.json({ success: true, received: spin });
+  res.json({ success: true, spin });
 });
 
 app.get('/', (req, res) => {
@@ -35,5 +38,5 @@ app.get('/', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 Servidor Bridge rodando na porta ${PORT}`);
+  console.log(`🚀 Servidor rodando na porta ${PORT}`);
 });
