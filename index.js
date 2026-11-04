@@ -9,7 +9,7 @@ const TABLE_ID = process.env.TABLE_ID || 'rwbrzportrwa16rg';
 const GAS_WEBHOOK_URL = process.env.GAS_WEBHOOK_URL || '';
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS) || 10000;
 
-// Token atual (pode ser atualizado a qualquer momento via rota /set-session)
+// Token padrão inicial
 let currentSessionId = process.env.JSESSIONID || '55548_121027_BRL^237^20261104T194142';
 
 let isRunning = false;
@@ -32,13 +32,9 @@ function getFortalezaTimestamp() {
 }
 
 async function sendToWebhook(payload) {
-  if (!GAS_WEBHOOK_URL) {
-    console.log(`[MODO TESTE - SEM WEBHOOK]`, payload.type);
-    return true;
-  }
+  if (!GAS_WEBHOOK_URL) return true;
   try {
-    const res = await axios.post(GAS_WEBHOOK_URL, payload, { timeout: 10000 });
-    console.log(`[WEBHOOK SUCESSO] Google respondeu:`, res.data);
+    await axios.post(GAS_WEBHOOK_URL, payload, { timeout: 10000 });
     return true;
   } catch (err) {
     console.error(`[ERRO WEBHOOK]`, err.message);
@@ -51,30 +47,14 @@ async function fetchAndProcess() {
 
   isRunning = true;
   try {
-    let historyList = null;
+    const encodedSession = encodeURIComponent(currentSessionId);
+    const historyUrl = `https://games.pragmaticplaylive.net/api/ui/statisticHistory?JSESSIONID=${encodedSession}&numberOfGames=500&tableId=${TABLE_ID}`;
+    
+    const res = await http.get(historyUrl);
+    const data = res.data;
 
-    // Tentativa 1: Buscar pelo endpoint autenticado com JSESSIONID
-    try {
-      const encodedSession = encodeURIComponent(currentSessionId);
-      const urlAuth = `https://games.pragmaticplaylive.net/api/ui/statisticHistory?JSESSIONID=${encodedSession}&numberOfGames=500&tableId=${TABLE_ID}`;
-      const res = await http.get(urlAuth);
-      if (res.data && Array.isArray(res.data.history)) {
-        historyList = res.data.history;
-      }
-    } catch (e) {
-      // Se falhar a autenticada, tenta a pública
-    }
-
-    // Tentativa 2: Se a autenticada falhar, tenta o endpoint público de estatísticas
-    if (!historyList) {
-      const urlPublic = `https://games.pragmaticplaylive.net/api/ui/stats?noOfGames=500&tableId=${TABLE_ID}`;
-      const resPub = await http.get(urlPublic);
-      const dataPub = resPub.data;
-      historyList = dataPub.history || dataPub.stats || (Array.isArray(dataPub) ? dataPub : null);
-    }
-
+    const historyList = data.history || (Array.isArray(data) ? data : null);
     if (!historyList || !Array.isArray(historyList)) {
-      console.warn(`[AVISO] Nenhuma estrutura válida encontrada nas tentativas.`);
       return { status: 'invalid_response' };
     }
 
@@ -97,16 +77,12 @@ async function fetchAndProcess() {
       lastGameId = validSpins[validSpins.length - 1].gameId;
       isSeeded = true;
 
-      console.log(`[SEED INICIAL] SUCESSO! ${validSpins.length} rodadas carregadas. Última rodada ID: ${lastGameId}`);
+      console.log(`[SEED INICIAL] SUCESSO! ${validSpins.length} rodadas carregadas e enviadas para a planilha.`);
       await sendToWebhook({ type: 'SEED', spins: validSpins });
       return { status: 'seeded', count: validSpins.length };
     }
 
     const newSpins = validSpins.filter(s => !processedIds.has(s.gameId));
-    if (newSpins.length === 0) {
-      return { status: 'no_new_spin', lastGameId };
-    }
-
     for (const spin of newSpins) {
       console.log(`🎰 [NOVA RODADA] ID: ${spin.gameId} | Número: ${spin.number}`);
       const ok = await sendToWebhook({ type: 'NEW_SPIN', spin });
@@ -144,6 +120,7 @@ app.get('/health', async (req, res) => {
   res.status(200).json({ ok: true, timestamp: getFortalezaTimestamp(), poll: result });
 });
 
+// Rota para atualizar o token instantaneamente direto pelo navegador/tablet
 app.get('/set-session', async (req, res) => {
   const raw = req.query.id || req.query.url || '';
   if (!raw) return res.status(400).json({ error: 'Informe ?id=SEU_TOKEN' });
@@ -151,7 +128,7 @@ app.get('/set-session', async (req, res) => {
   isSeeded = false;
   processedIds.clear();
   const test = await fetchAndProcess();
-  res.json({ message: 'Sessão atualizada com sucesso', result: test });
+  res.json({ message: 'Token atualizado com sucesso!', result: test });
 });
 
 app.listen(PORT, () => {
