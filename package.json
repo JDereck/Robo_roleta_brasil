@@ -1,0 +1,16 @@
+{
+  "name": "monitor-roleta-europeia",
+  "version": "1.0.0",
+  "description": "Monitoramento estatistico dos 37 conjuntos circulares da Roleta Europeia",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.7",
+    "express": "^4.21.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
