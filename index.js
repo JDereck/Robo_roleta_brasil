@@ -7,7 +7,7 @@ app.use(express.json());
 const PORT = process.env.PORT || 3000;
 const GAS_WEBHOOK_URL = process.env.GAS_WEBHOOK_URL || '';
 
-// Rota GET para o tablet reportar o número facilmente
+// Rota GET acionada pelo painel do tablet
 app.get('/report', async (req, res) => {
   const num = req.query.num;
   if (num === undefined) return res.status(400).json({ error: 'Falta o número ?num=' });
@@ -19,15 +19,21 @@ app.get('/report', async (req, res) => {
     timestamp: new Date().toLocaleString('pt-BR', { timeZone: 'America/Fortaleza' })
   };
 
-  console.log(`🎯 [RECEBIDO DO TABLET] Número: ${num}`);
+  console.log(`🎯 [TABLET RECEBEU] Número: ${num}`);
 
   if (GAS_WEBHOOK_URL) {
     try {
-      await axios.post(GAS_WEBHOOK_URL, { type: 'NEW_SPIN', spin }, { timeout: 8000 });
-      console.log(`✅ [GRAVADO NA PLANILHA COM SUCESSO]`);
+      const response = await axios.post(GAS_WEBHOOK_URL, { 
+        type: 'NEW_SPIN', 
+        spin 
+      }, { timeout: 10000 });
+      
+      console.log(`✅ [PLANILHA ATUALIZADA] Resposta do GAS:`, response.data);
     } catch (err) {
-      console.error(`[ERRO REPASSE PLANILHA]`, err.message);
+      console.error(`❌ [ERRO AO REPASSAR PARA PLANILHA]:`, err.message);
     }
+  } else {
+    console.warn(`⚠️ [AVISO] GAS_WEBHOOK_URL não está configurada no Render!`);
   }
 
   res.json({ success: true, spin });
