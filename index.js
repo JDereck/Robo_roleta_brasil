@@ -12,25 +12,27 @@ app.get('/report', async (req, res) => {
   const num = req.query.num;
   if (num === undefined) return res.status(400).json({ error: 'Falta o número ?num=' });
 
+  const timestamp = new Date().toLocaleString('pt-BR', { timeZone: 'America/Fortaleza' });
   const spin = {
     gameId: "tablet_" + Date.now(),
     number: parseInt(num, 10),
     rawResult: String(num),
-    timestamp: new Date().toLocaleString('pt-BR', { timeZone: 'America/Fortaleza' })
+    timestamp: timestamp
   };
 
   console.log(`🎯 [TABLET RECEBEU] Número: ${num}`);
 
   if (GAS_WEBHOOK_URL) {
     try {
+      // 1. Envia para a planilha e pede para o Apps Script disparar o Telegram
       const response = await axios.post(GAS_WEBHOOK_URL, { 
         type: 'NEW_SPIN', 
         spin 
       }, { timeout: 10000 });
       
-      console.log(`✅ [PLANILHA ATUALIZADA] Resposta do GAS:`, response.data);
+      console.log(`✅ [PLANILHA E TELEGRAM ATUALIZADOS] Resposta do GAS:`, response.data);
     } catch (err) {
-      console.error(`❌ [ERRO AO REPASSAR PARA PLANILHA]:`, err.message);
+      console.error(`❌ [ERRO AO REPASSAR]:`, err.message);
     }
   } else {
     console.warn(`⚠️ [AVISO] GAS_WEBHOOK_URL não está configurada no Render!`);
