@@ -7,19 +7,16 @@ app.use(express.urlencoded({ extended: true }));
 
 const PORT = process.env.PORT || 3000;
 
-// URL do seu Google Apps Script já conectada diretamente
+// URL do seu Google Apps Script
 let GAS_WEBHOOK_URL = process.env.GAS_WEBHOOK_URL || "https://script.google.com/macros/s/AKfycbzsD45UPV6mQAKLCzVnLCtdAGoG7AVzqwVLjB9y188fzBZc2PXqLz1I6Tbgyoopghb0/exec";
 
-// Configurações da API da Roleta em Nuvem
 let JSESSIONID = process.env.JSESSIONID || "";
-let TABLE_ID = process.env.TABLE_ID || "237"; // 237 = Roleta Pragmatic padrão
-let CUSTOM_API_URL = process.env.CUSTOM_API_URL || ""; // Caso use API pública externa
+let TABLE_ID = process.env.TABLE_ID || "237";
+let CUSTOM_API_URL = process.env.CUSTOM_API_URL || "";
 let ultimoGameId = null;
 let statusColetor = "Aguardando configuração de sessão ou API";
 
-// =========================================================================
-// 1. MOTOR DE CAPTURA AUTOMÁTICA EM NUVEM (RODA A CADA 5 SEGUNDOS)
-// =========================================================================
+// Motor de captura automática em nuvem (opcional)
 setInterval(async () => {
   try {
     let urlBusca = "";
@@ -28,18 +25,13 @@ setInterval(async () => {
     } else if (JSESSIONID) {
       urlBusca = `https://games.pragmaticplaylive.net/api/ui/statisticHistory?tableId=${TABLE_ID}&numberOfGames=10&JSESSIONID=${encodeURIComponent(JSESSIONID)}`;
     } else {
-      return; // Aguarda configurar sessão ou API
+      return;
     }
 
     const res = await axios.get(urlBusca, { timeout: 6000 });
     const data = res.data;
-
-    // Extrai o último giro (compatível com formato Pragmatic Play e JSON padrão)
     const listaHistorico = data.history || data.results || data.data || [];
-    if (! Array.isArray(listaHistorico) || listaHistorico.length === 0) {
-      statusColetor = "⚠️ Sessão expirada ou lista vazia (Atualize o JSESSIONID)";
-      return;
-    }
+    if (!Array.isArray(listaHistorico) || listaHistorico.length === 0) return;
 
     const ultimoGiro = listaHistorico[0];
     const gameId = String(ultimoGiro.gameId || ultimoGiro.id || ultimoGiro.time || "");
@@ -49,12 +41,11 @@ setInterval(async () => {
     if (matchNum && gameId && gameId !== ultimoGameId) {
       ultimoGameId = gameId;
       const numero = parseInt(matchNum[1], 10);
-      statusColetor = `✅ Ativo! Último nº capturado: ${numero} (ID: ${gameId})`;
-
+      statusColetor = `✅ Ativo! Último nº: ${numero}`;
       await enviarParaPlanilha(numero, gameId);
     }
   } catch (err) {
-    statusColetor = `❌ Erro na leitura da API (${err.response ? err.response.status : err.message})`;
+    statusColetor = `❌ Erro na leitura da API`;
   }
 }, 5000);
 
@@ -78,56 +69,29 @@ async function enviarParaPlanilha(num, gameId) {
   }
 }
 
-// =========================================================================
-// 2. PAINEL WEB NO PRÓPRIO RENDER PARA ATUALIZAR SESSÃO OU TESTAR GIROS
-// =========================================================================
+// Rota para disparar giros manuais diretamente via navegador ou link
+app.get('/report', async (req, res) => {
+  const num = req.query.num;
+  if (num === undefined) return res.status(400).send('Falta o parâmetro ?num=');
+  
+  await enviarParaPlanilha(num, "manual_" + Date.now());
+  res.send(`<h2>✅ Número ${num} enviado com sucesso para a planilha e Telegram!</h2><p><a href="/">Voltar ao painel</a></p>`);
+});
+
 app.get('/', (req, res) => {
   res.send(`
     <html>
-      <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>Controle Nuvem - Roleta</title>
-      </head>
+      <head><meta name="viewport" content="width=device-width, initial-scale=1"><title>Controle Nuvem</title></head>
       <body style="background:#111; color:#fff; font-family:Arial; padding:20px; max-width:500px; margin:auto;">
         <h2 style="color:#00ffcc;">🚀 Robô Roleta em Nuvem</h2>
-        <p><b>Status da Captura:</b> <span style="color:#ffcc00;">${statusColetor}</span></p>
+        <p><b>Status:</b> <span style="color:#ffcc00;">${statusColetor}</span></p>
         <hr style="border-color:#333;">
-        <form action="/config" method="POST">
-          <label><b>JSESSIONID (Pragmatic Play):</b></label><br>
-          <input type="text" name="jsessionid" value="${JSESSIONID}" style="width:100%; padding:8px; margin:6px 0;"><br>
-          <label><b>Table ID (Ex: 237):</b></label><br>
-          <input type="text" name="tableId" value="${TABLE_ID}" style="width:100%; padding:8px; margin:6px 0;"><br>
-          <label><b>Ou URL de API Externa (Opcional):</b></label><br>
-          <input type="text" name="customApi" value="${CUSTOM_API_URL}" style="width:100%; padding:8px; margin:6px 0;"><br>
-          <button type="submit" style="width:100%; padding:10px; background:#00aa00; color:#fff; border:none; font-weight:bold; border-radius:6px; margin-top:8px;">
-            💾 Salvar e Iniciar Captura em Nuvem
-          </button>
-        </form>
-        <hr style="border-color:#333; margin-top:20px;">
-        <h4>🎯 Simular Giro Manual p/ Testar Planilha e Telegram:</h4>
-        <form action="/report" method="GET" style="display:flex; gap:8px;">
-          <input type="number" name="num" min="0" max="36" placeholder="Nº (0 a 36)" required style="flex:1; padding:8px;">
-          <button type="submit" style="padding:8px 16px; background:#0066cc; color:#fff; border:none; border-radius:6px; font-weight:bold;">Enviar Nº</button>
-        </form>
+        <h3>🎯 Teste Rápido / Envio Manual:</h3>
+        <p>Para enviar um número direto, acesse no navegador:</p>
+        <code>https://robo-roleta-brasil.onrender.com/report?num=17</code> (troque o 17 pelo número desejado).
       </body>
     </html>
   `);
-});
-
-app.post('/config', (req, res) => {
-  if (req.body.jsessionid !== undefined) JSESSIONID = req.body.jsessionid.trim();
-  if (req.body.tableId !== undefined) TABLE_ID = req.body.tableId.trim();
-  if (req.body.customApi !== undefined) CUSTOM_API_URL = req.body.customApi.trim();
-  statusColetor = "🔄 Configuração atualizada! Buscando giros...";
-  res.redirect('/');
-});
-
-// Mantém a rota /report funcionando para testes e integrações
-app.get('/report', async (req, res) => {
-  const num = req.query.num;
-  if (num === undefined) return res.status(400).send('Falta ?num=');
-  await enviarParaPlanilha(num, "manual_" + Date.now());
-  res.redirect('/');
 });
 
 app.listen(PORT, () => {
