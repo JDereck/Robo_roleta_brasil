@@ -7,16 +7,29 @@ app.use(express.json());
 const PORT = process.env.PORT || 3000;
 const GAS_WEBHOOK_URL = process.env.GAS_WEBHOOK_URL || '';
 
-// Rota GET acionada pelos botões do tablet
+// Rota GET acionada pelo painel flutuante via imagem invisível
 app.get('/report', async (req, res) => {
   const num = req.query.num;
   if (num === undefined) {
     return res.status(400).json({ error: 'Falta o parâmetro ?num=' });
   }
 
+  processarEEnviar(num, res);
+});
+
+// Rota POST de segurança caso queira usar fetch no futuro
+app.post('/report', async (req, res) => {
+  const num = req.body.num;
+  if (num === undefined) {
+    return res.status(400).json({ error: 'Falta o parâmetro num' });
+  }
+
+  processarEEnviar(num, res);
+});
+
+async function processarEEnviar(num, res) {
   const timestamp = new Date().toLocaleString('pt-BR', { timeZone: 'America/Fortaleza' });
   
-  // Estrutura exata que o Google Apps Script espera receber
   const payloadToGAS = {
     type: 'NEW_SPIN',
     spin: {
@@ -40,8 +53,14 @@ app.get('/report', async (req, res) => {
     console.warn(`⚠️ [AVISO] GAS_WEBHOOK_URL não configurada no Render!`);
   }
 
-  res.json({ success: true, number: num });
-});
+  // Retorna um pixel transparente de 1x1 em formato GIF para o painel via imagem invisível
+  const transparentGif = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
+  res.writeHead(200, {
+    'Content-Type': 'image/gif',
+    'Content-Length': transparentGif.length
+  });
+  res.end(transparentGif);
+}
 
 app.get('/', (req, res) => {
   res.json({ service: 'Monitor Roleta Bridge', status: 'online' });
