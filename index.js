@@ -134,6 +134,152 @@ app.get("/api/state", (req, res) => {
   });
 });
 
+
+// =====================================================
+// GERENCIAMENTO DE MESAS E CONFIGURAÇÕES
+// =====================================================
+
+app.post("/api/config", (req, res) => {
+  try {
+    const b = req.body || {};
+
+    // ALTERAÇÃO DO STATUS DO ROBÔ
+    if (b.statusRobo !== undefined) {
+      if (!["ATIVO", "PAUSADO"].includes(b.statusRobo)) {
+        return res.status(400).json({
+          status: "error",
+          message: "Status do robô inválido."
+        });
+      }
+      config.statusRobo = b.statusRobo;
+    }
+
+    // VALIDAÇÃO DOS PARÂMETROS NUMÉRICOS
+    const limites = {
+      janelaAlvo: [10, 500],
+      avisoAntecipado: [1, 499],
+      maxSaidas: [1, 36],
+      maxEntradas: [1, 10],
+      limiteHistorico: [50, 500],
+      intervaloColeta: [5000, 60000]
+    };
+
+    for (const [campo, intervalo] of Object.entries(limites)) {
+      if (b[campo] !== undefined) {
+        const valor = Number(b[campo]);
+
+        if (!Number.isInteger(valor) ||
+            valor < intervalo[0] ||
+            valor > intervalo[1]) {
+          return res.status(400).json({
+            status: "error",
+            message: "Valor inválido para " + campo
+          });
+        }
+
+        config[campo] = valor;
+      }
+    }
+
+    if (config.avisoAntecipado >= config.janelaAlvo) {
+      return res.status(400).json({
+        status: "error",
+        message: "O pré-alerta precisa ser menor que a janela alvo."
+      });
+    }
+
+    // BLOQUEIO DE ENTRADAS SIMULTÂNEAS
+    if (b.bloquearSimultaneos !== undefined) {
+      config.bloquearSimultaneos =
+        b.bloquearSimultaneos === true ||
+        b.bloquearSimultaneos === "SIM";
+    }
+
+    // ATIVAÇÃO E DESATIVAÇÃO DAS MESAS
+    if (b.mesas !== undefined) {
+      const mesasMarcadas = Array.isArray(b.mesas)
+        ? b.mesas.map(String)
+        : [String(b.mesas)];
+
+      Object.keys(CATALOGO_MESAS).forEach(id => {
+        CATALOGO_MESAS[id].ativa = mesasMarcadas.includes(id);
+      });
+    }
+
+    // CADASTRO DE NOVA MESA
+    if (b.novaMesaId !== undefined || b.novaMesaNome !== undefined) {
+      const novoId = String(b.novaMesaId || "").trim();
+      const novoNome = String(b.novaMesaNome || "").trim();
+
+      if (!/^[0-9]{1,15}$/.test(novoId) || !novoNome || novoNome.length > 60) {
+        return res.status(400).json({
+          status: "error",
+          message: "Informe um ID numérico válido e um nome de até 60 caracteres."
+        });
+      }
+
+      if (CATALOGO_MESAS[novoId]) {
+        return res.status(409).json({
+          status: "error",
+          message: "Esta mesa já está cadastrada."
+        });
+      }
+
+      CATALOGO_MESAS[novoId] = {
+        id: novoId,
+        nome: novoNome,
+        ativa: true
+      };
+
+      inicializarMesa(novoId);
+    }
+
+    return res.json({
+      status: "success",
+      message: "Configurações atualizadas.",
+      config: {
+        statusRobo: config.statusRobo,
+        janelaAlvo: config.janelaAlvo,
+        avisoAntecipado: config.avisoAntecipado,
+        maxSaidas: config.maxSaidas,
+        maxEntradas: config.maxEntradas,
+        bloquearSimultaneos: config.bloquearSimultaneos,
+        limiteHistorico: config.limiteHistorico,
+        intervaloColeta: config.intervaloColeta
+      },
+      catalogo: CATALOGO_MESAS
+    });
+
+  } catch (err) {
+    console.error("Erro nas configurações:", err.message);
+
+    return res.status(500).json({
+      status: "error",
+      message: "Erro interno ao atualizar configurações."
+    });
+  }
+});
+
+// CONSULTA INDIVIDUAL DE UMA MESA
+app.get("/api/mesa/:id", (req, res) => {
+  const id = String(req.params.id);
+  const mesa = estadoMesas[id];
+
+  if (!mesa) {
+    return res.status(404).json({
+      status: "error",
+      message: "Mesa não encontrada."
+    });
+  }
+
+  res.json({
+    status: "success",
+    cadastro: CATALOGO_MESAS[id],
+    estado: mesa
+  });
+});
+
+
 // ROTA INICIAL
 app.get("/", (req, res) => {
   res.send(`
