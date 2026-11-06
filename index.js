@@ -17,7 +17,7 @@ const CILINDRO = [
 ];
 
 const CATALOGO_MESAS = {
-"237": { id: "237", tableIdApi: "rwbrzportrwa16rg", nome: "🇧🇷 Roleta Brasileira", ativa: true }
+"237": { id: "237", nome: "🇧🇷 Roleta Brasileira", ativa: true }
 };
 
 const config = {
@@ -27,8 +27,7 @@ avisoAntecipado: 95,
 maxSaidas: 10,
 tamConjunto: 6,
 maxEntradas: 3,
-limiteHistorico: 500,
-intervaloColeta: 5000
+limiteHistorico: 500
 };
 
 const estadoMesas = {
@@ -39,7 +38,8 @@ historico: [],
 ultimoGameId: null,
 contador: 0,
 carregado: false,
-statusConexao: "Iniciando motor autônomo...",
+statusConexao: "🟢 Pronto para receber dados",
+ultimaAtualizacao: null,
 radar: []
 }
 };
@@ -70,7 +70,7 @@ console.error("Erro Telegram:", e.message);
 }
 
 // =====================================================
-// MOTOR ESTATÍSTICO & GATILHOS
+// MOTOR ESTATÍSTICO & GATILHOS (X-1 | X | X+1)
 // =====================================================
 
 function contarJogadasAteSaidas(girosRecentes, numerosConj, limiteSaidas) {
@@ -141,7 +141,7 @@ return listaRadar;
 }
 
 // =====================================================
-// SINCRONIZAÇÃO GOOGLE SHEETS
+// SINCRONIZAÇÃO GOOGLE SHEETS (ROLANTE DE 500)
 // =====================================================
 
 async function sincronizarPlanilha(type, tableId, payload) {
@@ -152,102 +152,79 @@ await axios.post(GAS_WEBHOOK_URL, { type, tableId, ...payload }, { timeout: 1000
 }
 
 // =====================================================
-// COLETOR AUTOMÁTICO NATIVO (SEM NAVEGADOR)
+// PROCESSAMENTO DE ENTRADAS (SPINS / API)
 // =====================================================
 
-function localizarArrayDeJogos(obj, profundidade = 0) {
-if (!obj || profundidade > 4) return null;
-if (Array.isArray(obj)) {
-if (obj.length && obj.some(item => item && typeof item === "object")) return obj;
-return null;
+function extrairNumeros(entrada) {
+if (Array.isArray(entrada)) {
+return entrada.map(x => Number(String(x).trim())).filter(n => Number.isInteger(n) && n >= 0 && n <= 36);
 }
-if (typeof obj === "object") {
-for (const chave of ["history", "results", "data", "games", "statistics"]) {
-if (obj[chave] !== undefined) {
-const enc = localizarArrayDeJogos(obj[chave], profundidade + 1);
-if (enc) return enc;
-}
-}
-for (const val of Object.values(obj)) {
-if (val && typeof val === "object") {
-const enc = localizarArrayDeJogos(val, profundidade + 1);
-if (enc) return enc;
-}
-}
-}
-return null;
+if (!entrada || typeof entrada !== "string") return [];
+return entrada
+.split(/[\s,;]+/)
+.map(x => x.trim())
+.filter(x => /^(0|[1-9]|[12][0-9]|3[0-6])$/.test(x))
+.map(Number);
 }
 
-async function cicloColetaAutonoma() {
-const mesa = estadoMesas["237"];
-const cadastro = CATALOGO_MESAS["237"];
-if (!cadastro || !cadastro.ativa) return;
+function processarNovosGiros(idMesa, numerosArray) {
+const mesa = estadoMesas[idMesa];
+if (!mesa) return;
 
-try {
-// Acesso direto à estatística pública da Pragmatic Play
-const url = `https://games.pragmaticplaylive.net/api/ui/statisticHistory?tableId=${cadastro.tableIdApi}&numberOfGames=500`;
-const res = await axios.get(url, {
-timeout: 10000,
-headers: { "Accept": "application/json", "User-Agent": "Mozilla/5.0" }
-});
+const agora = new Date().toISOString();
 
-const lista = localizarArrayDeJogos(res.data);
-if (!lista || !lista.length) return;
+// Carga Inicial (500 giros)
+if (!mesa.carregado || numerosArray.length >= 100) {
+const base = numerosArray.slice(0, config.limiteHistorico);
+mesa.historico = [];
+mesa.contador = 0;
 
-const novosJogos = lista.map(item => {
-const gId = item.gameId ?? item.id ?? item.roundId;
-const bruto = item.gameResult ?? item.result ?? item.number;
-if (gId === undefined || bruto === undefined) return null;
-const num = Number(String(bruto).match(/\d+/)?.[0] ?? bruto);
-if (!Number.isInteger(num) || num < 0 || num > 36) return null;
-return {
-tableId: "237",
-gameId: String(gId),
+for (const num of base.slice().reverse()) {
+mesa.contador++;
+const gId = idMesa + "_G_" + String(mesa.contador).padStart(6, "0");
+mesa.historico.unshift({
+tableId: idMesa,
+gameId: gId,
 number: num,
-rawResult: String(bruto),
-timestamp: item.timestamp || new Date().toISOString(),
-origem: "render_autonomo"
+rawResult: String(num),
+timestamp: agora,
+origem: "web_sync"
+});
+}
+
+mesa.carregado = true;
+mesa.statusConexao = "🟢 Conectado (" + mesa.historico.length + " giros | Últ: " + mesa.historico[0].number + ")";
+sincronizarPlanilha("SYNC_BATCH", idMesa, { spins: mesa.historico });
+calcularRadarMesa(idMesa);
+return { modo: "CARGA_COMPLETA", total: mesa.historico.length };
+}
+
+// Giros ao vivo
+const inseridos = [];
+for (const num of numerosArray) {
+if (!Number.isInteger(num) || num < 0 || num > 36) continue;
+mesa.contador++;
+const gId = idMesa + "_G_" + String(mesa.contador).padStart(6, "0");
+const giro = {
+tableId: idMesa,
+gameId: gId,
+number: num,
+rawResult: String(num),
+timestamp: agora,
+origem: "ao_vivo"
 };
-}).filter(Boolean);
-
-if (!novosJogos.length) return;
-
-if (!mesa.carregado500 || !mesa.ultimoGameId) {
-mesa.historico = novosJogos.slice(0, config.limiteHistorico);
-mesa.ultimoGameId = mesa.historico[0].gameId;
-mesa.carregado500 = true;
-mesa.statusConexao = "🟢 100% Autônomo (" + mesa.historico.length + " giros)";
-sincronizarPlanilha("SYNC_BATCH", "237", { spins: mesa.historico });
-calcularRadarMesa("237");
-return;
-}
-
-const idx = novosJogos.findIndex(j => j.gameId === mesa.ultimoGameId);
-if (idx === -1) {
-mesa.historico = novosJogos.slice(0, config.limiteHistorico);
-mesa.ultimoGameId = mesa.historico[0].gameId;
-sincronizarPlanilha("SYNC_BATCH", "237", { spins: mesa.historico });
-calcularRadarMesa("237");
-return;
-}
-
-const recentes = novosJogos.slice(0, idx).reverse();
-for (const giro of recentes) {
-if (!mesa.historico.some(r => r.gameId === giro.gameId)) {
 mesa.historico.unshift(giro);
-sincronizarPlanilha("NEW_SPIN", "237", { spin: giro });
-calcularRadarMesa("237", giro.number);
-}
-}
-mesa.historico = mesa.historico.slice(0, config.limiteHistorico);
-if (recentes.length > 0) mesa.ultimoGameId = mesa.historico[0].gameId;
-mesa.statusConexao = "🟢 100% Autônomo (Último: " + (mesa.historico[0]?.number ?? "-") + ")";
-} catch (e) {
-mesa.statusConexao = "🟡 Conectando à API... (" + e.message.slice(0, 30) + ")";
-}
+inseridos.push(giro);
+sincronizarPlanilha("NEW_SPIN", idMesa, { spin: giro });
+calcularRadarMesa(idMesa, num);
 }
 
-setInterval(cicloColetaAutonoma, config.intervaloColeta);
+mesa.historico = mesa.historico.slice(0, config.limiteHistorico);
+if (inseridos.length > 0) {
+mesa.statusConexao = "🟢 Ao Vivo (" + mesa.historico.length + " giros | Últ: " + mesa.historico[0].number + ")";
+}
+return { modo: "AO_VIVO", inseridos: inseridos.length };
+}
 
 // =====================================================
 // ROTAS API
@@ -259,6 +236,19 @@ res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
 res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 if (req.method === "OPTIONS") return res.sendStatus(200);
 next();
+});
+
+app.post("/api/spins", (req, res) => {
+try {
+const idMesa = String(req.body.tableId || "237").trim();
+const numeros = extrairNumeros(req.body.numbers || req.body.text || req.body.html);
+if (!numeros.length) return res.status(400).json({ status: "error", message: "Nenhum número válido." });
+
+const resultado = processarNovosGiros(idMesa, numeros);
+return res.json({ status: "success", resultado });
+} catch (err) {
+return res.status(400).json({ status: "error", message: err.message });
+}
 });
 
 app.get("/api/radar-todas", (req, res) => {
@@ -289,6 +279,9 @@ res.json({ status: "success", config });
 // =====================================================
 
 app.get("/", (req, res) => {
+const host = req.get("host");
+const scriptAuto = `(()=>{const SRV="https://${host}/api/spins",MESA="237";const gaveta=document.querySelector('[data-testid="game-statistics"]')||document.querySelector("#drawerRoot");if(gaveta){const n500=[...gaveta.querySelectorAll('[data-testid="single-result"]')].map(e=>e.innerText.trim()).filter(x=>/^(0|[1-9]|[12][0-9]|3[0-6])$/.test(x));if(n500.length>=50)fetch(SRV,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({tableId:MESA,numbers:n500})}).then(r=>r.json()).then(j=>console.log("BASE ENVIADA:",j));}const el=document.querySelector('[data-testid="recent-results"]');if(el){window.__rouletteObserver?.disconnect();let ant=[...el.querySelectorAll('[data-testid="single-result"]')].map(e=>e.innerText.trim()),tm;window.__rouletteObserver=new MutationObserver(()=>{clearTimeout(tm);tm=setTimeout(()=>{const at=[...el.querySelectorAll('[data-testid="single-result"]')].map(e=>e.innerText.trim());let k=Math.min(ant.length,at.length);while(k>0&&ant.slice(0,k).join(",")!==at.slice(-k).join(","))k--;if(k>0){const nv=at.slice(0,at.length-k);if(nv.length)fetch(SRV,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({tableId:MESA,numbers:nv})});ant=at;}},300);});window.__rouletteObserver.observe(el,{childList:true,subtree:true,characterData:true});return "Auto-Sync ativo na barra!";}return "Abra a gaveta de estatísticas para carregar a base.";})()`;
+
 const html = [
 "<!DOCTYPE html><html lang='pt-BR'><head><meta charset='UTF-8'>",
 "<meta name='viewport' content='width=device-width, initial-scale=1'>",
@@ -300,7 +293,7 @@ const html = [
 ".grid{display:grid;grid-template-columns:1fr;gap:10px;margin-bottom:10px}",
 "@media(min-width:768px){.grid{grid-template-columns:1fr 1fr}}",
 ".card{background:var(--card);padding:12px;border-radius:10px;border:1px solid var(--border);margin-bottom:10px}",
-"input,select{width:100%;padding:9px;background:#0e1015;color:#fff;border:1px solid #383d4c;border-radius:6px;box-sizing:border-box;margin-top:4px;font-size:14px}",
+"input,select,textarea{width:100%;padding:9px;background:#0e1015;color:#fff;border:1px solid #383d4c;border-radius:6px;box-sizing:border-box;margin-top:4px;font-size:14px}",
 "button{width:100%;padding:11px;background:var(--green);color:#000;font-weight:bold;border:none;border-radius:6px;font-size:14px;cursor:pointer;margin-top:8px}",
 ".table-wrapper{overflow-x:auto;margin-top:8px;border-radius:8px;border:1px solid var(--border)}",
 "table{width:100%;border-collapse:collapse;font-size:13px;white-space:nowrap}",
@@ -313,11 +306,11 @@ const html = [
 ".normal{color:#888}",
 ".col-alvo{background:rgba(0,230,118,0.08);font-weight:bold;color:var(--green);font-size:14px}",
 "</style></head><body>",
-"<h2>🎯 ROULETTE CONTROL (24/7)</h2>",
+"<h2>🎯 ROULETTE CONTROL</h2>",
 "<div class='grid'>",
 "<div class='card'>",
-"<b style='color:var(--green)'>⚙️ Configurações & Telegram em Tempo Real</b>",
-"<label style='font-size:11px;color:#aaa;display:block;margin-top:6px'>Status do Robô / Telegram:</label>",
+"<b style='color:var(--green)'>⚙️ Configurações & Telegram</b>",
+"<label style='font-size:11px;color:#aaa;display:block;margin-top:6px'>Status do Robô:</label>",
 "<select id='statusRobo' onchange='salvarConfig()'>",
 "<option value='ATIVO'>ATIVO (Disparando Alertas)</option>",
 "<option value='PAUSADO'>PAUSADO</option>",
@@ -331,10 +324,10 @@ const html = [
 "<div style='flex:1'><label style='font-size:11px;color:#aaa'>Vizinhos</label><input type='number' id='tamConjunto' value='" + config.tamConjunto + "' onchange='salvarConfig()'></div>",
 "</div></div>",
 "<div class='card'>",
-"<b style='color:var(--gold)'>📡 Radar Automático 24/7</b>",
-"<p style='font-size:12px;color:#aaa;margin:6px 0'>O servidor Render puxa a roleta da Pragmatic sozinho. Nenhum navegador precisa ficar aberto.</p>",
-"<div style='font-size:13px;color:var(--green);margin-top:10px;font-weight:bold' id='lblConexoes'>Iniciando...</div>",
-"<button onclick='carregarRadar()' style='background:#333;color:#fff'>Atualizar Agora</button>",
+"<b style='color:var(--gold)'>📥 Alimentação Manual / Teste</b>",
+"<textarea id='txtManual' rows='2' placeholder='Cole giros ou digite números...'></textarea>",
+"<button onclick='enviarManual()'>ENVIAR AO RADAR</button>",
+"<div style='font-size:12px;color:var(--green);margin-top:8px;font-weight:bold' id='lblConexoes'>Aguardando dados...</div>",
 "</div></div>",
 "<div class='card'>",
 "<div style='display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px'>",
@@ -352,8 +345,12 @@ const html = [
 "<th>Saída <span id='hdr-x-mais-1'>11</span></th>",
 "<th>Status</th>",
 "</tr></thead>",
-"<tbody id='radarBody'><tr><td colspan='7'>Buscando dados no servidor...</td></tr></tbody>",
+"<tbody id='radarBody'><tr><td colspan='7'>Carregando tabela...</td></tr></tbody>",
 "</table></div></div>",
+"<div class='card'>",
+"<b style='color:var(--green)'>⚡ Script de Sincronização Automática (Favorito / Console)</b>",
+"<textarea rows='2' readonly style='font-family:monospace;font-size:11px;color:var(--gold)' onclick='this.select()'>" + scriptAuto + "</textarea>",
+"</div>",
 "<script>",
 "let dadosGlobais=null;",
 "async function carregarRadar(){",
@@ -385,6 +382,15 @@ const html = [
 "tbody.appendChild(tr);",
 "});",
 "}",
+"async function enviarManual(){",
+"let txt=document.getElementById('txtManual').value.trim();",
+"if(!txt)return;",
+"let r=await fetch('/api/spins',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tableId:'237',numbers:txt})});",
+"let j=await r.json();",
+"if(j.status==='error')alert(j.message);",
+"document.getElementById('txtManual').value='';",
+"carregarRadar();",
+"}",
 "async function salvarConfig(){",
 "let payload={",
 "statusRobo:document.getElementById('statusRobo').value,",
@@ -397,12 +403,12 @@ const html = [
 "carregarRadar();",
 "}",
 "carregarRadar();",
-"setInterval(carregarRadar,5000);",
+"setInterval(carregarRadar,4000);",
 "</script></body></html>"
 ].join("");
 res.send(html);
 });
 
 app.listen(PORT, () => {
-console.log("ROULETTE CONTROL 24/7 rodando na porta " + PORT);
+console.log("ROULETTE CONTROL rodando na porta " + PORT);
 });
