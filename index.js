@@ -16,9 +16,9 @@ const CILINDRO = [
 ];
 
 const CATALOGO_MESAS = {
-"237": { id: "237", tableIdApi: "rwbrzportrwa16rg", nome: "🇧🇷 Brasil", ativa: true },
-"204": { id: "204", tableIdApi: "204", nome: "⚡ Mega", ativa: true },
-"225": { id: "225", tableIdApi: "225", nome: "🏎️ Auto", ativa: true }
+"237": { id: "237", blitzUrl: "https://blitz4.casino/api/games/brazilian-roulette-237-237", nome: "🇧🇷 Brasil", ativa: true },
+"204": { id: "204", blitzUrl: null, nome: "⚡ Mega", ativa: true },
+"225": { id: "225", blitzUrl: null, nome: "🏎️ Auto", ativa: true }
 };
 
 const config = {
@@ -28,7 +28,8 @@ avisoAntecipado: 95,
 maxSaidas: 10,
 tamConjunto: 6,
 maxEntradas: 3,
-limiteHistorico: 500
+limiteHistorico: 500,
+intervaloColeta: 5000 // 5 segundos
 };
 
 const estadoMesas = {};
@@ -42,7 +43,7 @@ id: cadastro.id,
 nome: cadastro.nome,
 historico: [],
 ultimoGameId: null,
-contadorSequencialHtml: 0,
+contadorSequencial: 0,
 carregado500: false,
 statusConexao: "Aguardando",
 ultimaAtualizacao: null,
@@ -117,15 +118,9 @@ valorOrdenacao = atraso_X_menos_1 - 0.5;
 }
 
 listaRadar.push({
-roleta: mesa.nome,
-id: idConj,
-conjunto: strConjunto,
-x_menos_1: atraso_X_menos_1,
-x: atraso_X,
-x_mais_1: atraso_X_mais_1,
-status: statusAtual,
-badge: badgeClass,
-valorOrdenacao: valorOrdenacao
+roleta: mesa.nome, id: idConj, conjunto: strConjunto,
+x_menos_1: atraso_X_menos_1, x: atraso_X, x_mais_1: atraso_X_mais_1,
+status: statusAtual, badge: badgeClass, valorOrdenacao: valorOrdenacao
 });
 }
 
@@ -135,7 +130,7 @@ return listaRadar;
 }
 
 // =====================================================
-// EXTRATOR DE HTML E SINCRONIZAÇÃO
+// WEBHOOK GOOGLE SHEETS
 // =====================================================
 
 async function sincronizarLoteComPlanilha(tableId, spins) {
@@ -148,9 +143,52 @@ if (!GAS_WEBHOOK_URL) return;
 try { await axios.post(GAS_WEBHOOK_URL, { type: "NEW_SPIN", tableId, spin }, { timeout: 10000 }); } catch (e) {}
 }
 
+// =====================================================
+// EXTRATORES UNIVERSAIS (JSON BLITZ OU HTML)
+// =====================================================
+
+function localizarArrayDeJogos(obj, profundidade = 0) {
+if (!obj || profundidade > 4) return null;
+if (Array.isArray(obj) && obj.length && obj.some(i => i && typeof i === "object")) return obj;
+if (typeof obj === "object") {
+for (const chave of ["history", "results", "data", "games", "statistics", "list"]) {
+if (obj[chave] !== undefined) {
+const enc = localizarArrayDeJogos(obj[chave], profundidade + 1);
+if (enc) return enc;
+}
+}
+for (const val of Object.values(obj)) {
+if (val && typeof val === "object") {
+const enc = localizarArrayDeJogos(val, profundidade + 1);
+if (enc) return enc;
+}
+}
+}
+return null;
+}
+
+function normalizarJogoJSON(item) {
+if (!item) return null;
+const gameId = item.gameId ?? item.game_id ?? item.id ?? item.roundId;
+const bruto = item.gameResult ?? item.rawResult ?? item.result ?? item.number ?? item.winningNumber;
+if (bruto === undefined || bruto === null) return null;
+
+const texto = String(bruto).trim();
+const match = texto.match(/(?:^|\D)(\d{1,2})(?:\D|$)/);
+const numero = Number(match ? match[1] : texto);
+
+if (!Number.isInteger(numero) || numero < 0 || numero > 36) return null;
+
+return {
+gameId: gameId ? String(gameId) : null,
+number: numero,
+rawResult: texto,
+timestamp: item.timestamp ?? item.date ?? item.createdAt ?? new Date().toISOString()
+};
+}
+
 function extrairNumerosDoHtml(htmlBruto) {
-if (!htmlBruto || typeof htmlBruto !== "string") return { tipoDetectado: "desconhecido", itens: [] };
-let tipoDetectado = htmlBruto.includes('data-testid="game-statistics"') ? "game-statistics" : "recent-results";
+if (!htmlBruto) return [];
 const regexBloco = /<div[^>]*data-testid="single-result"[^>]*>[\s\S]*?<\/div>/gi;
 const blocos = htmlBruto.match(regexBloco) || [];
 const itens = [];
@@ -164,10 +202,10 @@ const betCode = Number(matchBetCode[1]);
 numero = betCode === 2 ? 0 : betCode - 3;
 }
 if (Number.isInteger(numero) && numero >= 0 && numero <= 36) {
-itens.push({ number: numero, betCode: matchBetCode ? String(matchBetCode[1]) : null });
+itens.push({ number: numero, gameId: null });
 }
 }
-return { tipoDetectado, itens };
+return itens;
 }
 
 function descobrirNovosPorAlinhamento(numerosRecentes, numerosHistorico) {
@@ -184,53 +222,56 @@ if (igual) return numerosRecentes.slice(0, k);
 return null;
 }
 
-function sincronizarMesaPorHtml(idMesa, htmlBruto) {
+// =====================================================
+// NÚCLEO DE INGESTÃO (Aceita API ou HTML)
+// =====================================================
+
+function processarListaDeJogos(idMesa, itens, origem) {
 const mesa = estadoMesas[idMesa];
-if (!mesa) throw new Error("Mesa não encontrada: " + idMesa);
-const extraido = extrairNumerosDoHtml(htmlBruto);
-const itens = extraido.itens;
-if (!itens.length) throw new Error("Nenhum giro detectado no HTML.");
+if (!mesa) return;
+if (!itens || !itens.length) return;
 
 const agora = new Date().toISOString();
 
-// TRAVA DE SEGURANÇA: Só aceita base menor que 100 giros se já tiver carregado os 500 antes.
-if (!mesa.carregado500 && itens.length < 100) {
-throw new Error("MESA NÃO INICIALIZADA: Abra a tela de estatísticas dos 500 giros para o Robô puxar a base primeiro.");
-}
-
-if (!mesa.carregado500 || itens.length >= 100 || extraido.tipoDetectado === "game-statistics") {
+// Carga Inicial (Se vierem 100+ giros ou mesa vazia)
+if (!mesa.carregado500 || itens.length >= 100) {
 const totalBase = itens.slice(0, config.limiteHistorico);
 mesa.historico = [];
-mesa.contadorSequencialHtml = 0;
+mesa.contadorSequencial = 0;
 const doMaisAntigo = totalBase.slice().reverse();
 for (const item of doMaisAntigo) {
-mesa.contadorSequencialHtml += 1;
+mesa.contadorSequencial += 1;
+const gId = item.gameId || (idMesa + "_AUTO_" + String(mesa.contadorSequencial).padStart(6, "0"));
 mesa.historico.unshift({
-tableId: idMesa, gameId: idMesa + "_HTML_" + String(mesa.contadorSequencialHtml).padStart(6, "0"),
-number: item.number, rawResult: String(item.number), timestamp: null, coletadoEm: agora, origem: "html"
+tableId: idMesa, gameId: gId, number: item.number, rawResult: String(item.number), timestamp: item.timestamp || agora, coletadoEm: agora, origem: origem
 });
 }
 mesa.ultimoGameId = mesa.historico[0].gameId;
 mesa.carregado500 = true;
-mesa.statusConexao = "Online (" + mesa.historico.length + " giros)";
+mesa.statusConexao = "Online (" + origem + ")";
 sincronizarLoteComPlanilha(idMesa, mesa.historico);
 calcularRadarMesa(idMesa);
-return { modo: "CARGA_COMPLETA" };
+return;
 }
 
+// Atualização ao vivo por alinhamento
 const numRecentes = itens.map(x => x.number);
 const numHistorico = mesa.historico.map(x => x.number);
 const novos = descobrirNovosPorAlinhamento(numRecentes, numHistorico);
 
-if (novos === null) throw new Error("Falha no alinhamento. Abra a tela dos 500 giros para ressincronizar.");
-if (novos.length === 0) return { modo: "ATUALIZADO", inseridos: 0 };
+if (novos === null || novos.length === 0) return;
 
 const novosInvertidos = novos.slice().reverse();
-for (const num of novosInvertidos) {
-mesa.contadorSequencialHtml += 1;
+// Pega os itens reais correspondentes aos números novos
+const itensNovosReais = itens.slice(0, novos.length).reverse();
+
+for (let i = 0; i < novosInvertidos.length; i++) {
+mesa.contadorSequencial += 1;
+const itemOriginal = itensNovosReais[i];
+const gId = itemOriginal.gameId || (idMesa + "_AUTO_" + String(mesa.contadorSequencial).padStart(6, "0"));
+
 const novoGiro = {
-tableId: idMesa, gameId: idMesa + "_HTML_" + String(mesa.contadorSequencialHtml).padStart(6, "0"),
-number: num, rawResult: String(num), timestamp: agora, coletadoEm: agora, origem: "html"
+tableId: idMesa, gameId: gId, number: novosInvertidos[i], rawResult: String(novosInvertidos[i]), timestamp: itemOriginal.timestamp || agora, coletadoEm: agora, origem: origem
 };
 mesa.historico.unshift(novoGiro);
 enviarGiroParaPlanilha(idMesa, novoGiro);
@@ -238,10 +279,36 @@ enviarGiroParaPlanilha(idMesa, novoGiro);
 
 mesa.historico = mesa.historico.slice(0, config.limiteHistorico);
 mesa.ultimoGameId = mesa.historico[0].gameId;
-mesa.statusConexao = "Online (Ao Vivo)";
+mesa.statusConexao = "Online (" + origem + " ao vivo)";
 calcularRadarMesa(idMesa);
-return { modo: "ATUALIZACAO_AO_VIVO", inseridos: novos.length };
 }
+
+// =====================================================
+// BACKGROUND WORKER (O ROBÔ 24/7)
+// =====================================================
+
+async function rotinaDeColetaAutomatica() {
+for (const idMesa of Object.keys(CATALOGO_MESAS)) {
+const mesaInfo = CATALOGO_MESAS[idMesa];
+if (mesaInfo.ativa && mesaInfo.blitzUrl) {
+try {
+const resposta = await axios.get(mesaInfo.blitzUrl, { timeout: 10000 });
+const arrayJogos = localizarArrayDeJogos(resposta.data);
+if (arrayJogos) {
+const itensNormalizados = arrayJogos.map(normalizarJogoJSON).filter(Boolean);
+if (itensNormalizados.length > 0) {
+processarListaDeJogos(idMesa, itensNormalizados, "API_Blitz");
+}
+}
+} catch (e) {
+// Se falhar silenciosamente, tenta na próxima
+}
+}
+}
+}
+
+// Inicia o loop infinito do servidor
+setInterval(rotinaDeColetaAutomatica, config.intervaloColeta);
 
 // =====================================================
 // ROTAS API
@@ -252,10 +319,13 @@ try {
 res.setHeader("Access-Control-Allow-Origin", "*");
 const idMesa = String(req.body.tableId || "237").trim();
 const html = String(req.body.html || "");
-const resultado = sincronizarMesaPorHtml(idMesa, html);
-return res.json({ status: "success", idMesa, resultado });
+const itens = extrairNumerosDoHtml(html);
+if (itens.length > 0) {
+processarListaDeJogos(idMesa, itens, "HTML_Manual");
+return res.json({ status: "success", idMesa, inseridos: itens.length });
+}
+return res.status(400).json({ status: "error", message: "Nenhum giro detectado no HTML." });
 } catch (err) {
-res.setHeader("Access-Control-Allow-Origin", "*");
 return res.status(400).json({ status: "error", message: err.message });
 }
 });
@@ -273,7 +343,7 @@ Object.keys(CATALOGO_MESAS).forEach(id => {
 if(CATALOGO_MESAS[id].ativa) {
 radarGlobal = radarGlobal.concat(calcularRadarMesa(id));
 const m = estadoMesas[id];
-conexoes.push(`${CATALOGO_MESAS[id].nome}: ${m.statusConexao}`);
+conexoes.push(`${CATALOGO_MESAS[id].nome}: ${m.statusConexao} (${m.historico.length})`);
 }
 });
 radarGlobal.sort((a, b) => b.valorOrdenacao - a.valorOrdenacao);
@@ -340,13 +410,13 @@ const html = [
 "</div>",
 
 "<div class='card'>",
-"<b style='color:var(--red)'>📥 Alimentação Manual</b><br>",
+"<b style='color:var(--red)'>📥 Alimentação Manual (Plano B)</b><br>",
 "<select id='mesaSelect' style='margin-bottom:5px'>",
 "<option value='237'>🇧🇷 Roleta Brasileira</option>",
 "<option value='204'>⚡ Mega Roulette</option>",
 "<option value='225'>🏎️ Auto-Roulette</option>",
 "</select>",
-"<textarea id='htmlBox' rows='2' placeholder='Cole HTML se não usar o Robô...'></textarea>",
+"<textarea id='htmlBox' rows='2' placeholder='Cole HTML se a API falhar...'></textarea>",
 "<button onclick='enviarHtml()'>SALVAR GIROS</button>",
 "</div>",
 "</div>",
@@ -359,7 +429,7 @@ const html = [
 "<option value='gatilho'>Só Gatilhos 🔥</option>",
 "</select>",
 "</div>",
-"<div style='font-size:12px;color:#00c753;margin-bottom:10px' id='lblConexoes'>Atualizando...</div>",
+"<div style='font-size:12px;color:#00c753;margin-bottom:10px;font-weight:bold' id='lblConexoes'>Iniciando robô autônomo...</div>",
 
 "<div class='table-wrapper'>",
 "<table><thead><tr>",
@@ -369,22 +439,8 @@ const html = [
 "<th>Saída <span id='hdr-x-mais-1'>11</span></th>",
 "<th>Status</th>",
 "</tr></thead>",
-"<tbody id='radarBody'><tr><td colspan='7'>Carregando...</td></tr></tbody>",
+"<tbody id='radarBody'><tr><td colspan='7'>Buscando dados na API...</td></tr></tbody>",
 "</table></div></div>",
-
-"<div class='card' style='text-align:center'>",
-"<b style='color:var(--green)'>🤖 Instalação do Robô Automático</b>",
-"<p style='font-size:13px;color:#aaa;text-align:left;line-height:1.5'>",
-"1. No tablet, adicione qualquer página aos <b>Favoritos</b>.<br>",
-"2. Edite esse favorito, mude o nome para <b>ROBO AUTO</b> e cole o código abaixo no campo Endereço/URL:<br>",
-"</p>",
-"<textarea rows='4' readonly style='font-family:monospace;font-size:11px;color:#ffbb00;background:#111' onclick='this.select()'>",
-"javascript:(function(){ if(window.rInterval) clearInterval(window.rInterval); var url = 'https://"+host+"/api/html-ingest'; function extrair() { var hist = document.querySelector('[data-testid=\"game-statistics\"]'); if(hist){ fetch(url, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tableId:'237',html:hist.outerHTML})}).then(r=>console.log('500 enviados')); } var aoVivo = document.querySelector('[data-testid=\"recent-results\"]') || document.querySelector('#root > div.by_bz > div.gv_bA.by_bA > div.Mp_Iv > div.Mp_jg > div.Mp_My > div.qb_qe > div.RA_RB > div > div.fv_fB > div.fv_fM > div > div'); if(aoVivo){ fetch(url, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tableId:'237',html:aoVivo.outerHTML})}); } } extrair(); window.rInterval = setInterval(extrair, 5000); alert('ROBÔ ATIVADO! \\n\\n1. Abra o gráfico de estatísticas para sugar os 500 giros.\\n2. Feche o gráfico e ele continuará sugando a barra ao vivo a cada 5s!'); })();",
-"</textarea>",
-"<p style='font-size:13px;color:#aaa;text-align:left;margin-bottom:0'>",
-"3. Abra a roleta, clique no favorito <b>ROBO AUTO</b>. Depois <b>abra as estatísticas na tela do jogo por 2 segundos</b> para o robô sugar os 500 giros. O resto ele faz sozinho!",
-"</p>",
-"</div>",
 
 "<script>",
 "let dadosGlobais=null;",
@@ -422,7 +478,6 @@ const html = [
 "let j=await r.json();",
 "document.getElementById('htmlBox').value='';",
 "carregarRadar();",
-"if(j.status==='error') alert(j.message);",
 "}catch(e){alert('Erro: '+e.message);}",
 "}",
 "async function salvarConfig(){",
