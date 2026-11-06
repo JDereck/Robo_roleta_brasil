@@ -63,7 +63,7 @@ return resultado;
 }
 
 // =====================================================
-// NOVO MOTOR ESTATÍSTICO (X-1, X, X+1)
+// MOTOR ESTATÍSTICO (X-1, X, X+1)
 // =====================================================
 
 function calcularRadarMesa(idMesa) {
@@ -113,7 +113,7 @@ statusAtual = "⚠️ PRÉ";
 badgeClass = "alerta";
 }
 } else if (atraso_X_menos_1 !== "-") {
-valorOrdenacao = atraso_X_menos_1 - 0.5; // Fica logo abaixo dos que já tem X
+valorOrdenacao = atraso_X_menos_1 - 0.5;
 }
 
 listaRadar.push({
@@ -193,6 +193,11 @@ if (!itens.length) throw new Error("Nenhum giro detectado no HTML.");
 
 const agora = new Date().toISOString();
 
+// TRAVA DE SEGURANÇA: Só aceita base menor que 100 giros se já tiver carregado os 500 antes.
+if (!mesa.carregado500 && itens.length < 100) {
+throw new Error("MESA NÃO INICIALIZADA: Abra a tela de estatísticas dos 500 giros para o Robô puxar a base primeiro.");
+}
+
 if (!mesa.carregado500 || itens.length >= 100 || extraido.tipoDetectado === "game-statistics") {
 const totalBase = itens.slice(0, config.limiteHistorico);
 mesa.historico = [];
@@ -217,7 +222,7 @@ const numRecentes = itens.map(x => x.number);
 const numHistorico = mesa.historico.map(x => x.number);
 const novos = descobrirNovosPorAlinhamento(numRecentes, numHistorico);
 
-if (novos === null) throw new Error("Falha no alinhamento. Envie os 500 giros novamente.");
+if (novos === null) throw new Error("Falha no alinhamento. Abra a tela dos 500 giros para ressincronizar.");
 if (novos.length === 0) return { modo: "ATUALIZADO", inseridos: 0 };
 
 const novosInvertidos = novos.slice().reverse();
@@ -233,7 +238,7 @@ enviarGiroParaPlanilha(idMesa, novoGiro);
 
 mesa.historico = mesa.historico.slice(0, config.limiteHistorico);
 mesa.ultimoGameId = mesa.historico[0].gameId;
-mesa.statusConexao = "Online (Auto)";
+mesa.statusConexao = "Online (Ao Vivo)";
 calcularRadarMesa(idMesa);
 return { modo: "ATUALIZACAO_AO_VIVO", inseridos: novos.length };
 }
@@ -287,7 +292,7 @@ res.json({ status: "success", config });
 });
 
 // =====================================================
-// NOVO PAINEL VIP PARA O TABLET
+// PAINEL VIP 
 // =====================================================
 
 app.get("/", (req, res) => {
@@ -306,7 +311,6 @@ const html = [
 "input, select, textarea { width: 100%; padding: 10px; background: #222; color: #fff; border: 1px solid #444; border-radius: 6px; box-sizing: border-box; margin-top: 5px; font-size: 15px; }",
 "input:focus, select:focus { outline: none; border-color: var(--green); }",
 "button { width: 100%; padding: 12px; background: var(--green); color: #000; font-weight: bold; border: none; border-radius: 6px; font-size: 16px; cursor: pointer; margin-top: 10px; text-transform: uppercase; }",
-"button.red { background: var(--red); color: #fff; }",
 ".table-wrapper { overflow-x: auto; margin-top: 10px; border-radius: 8px; border: 1px solid var(--border); }",
 "table { width: 100%; border-collapse: collapse; font-size: 14px; white-space: nowrap; }",
 "th, td { border-bottom: 1px solid #2a2a2a; padding: 12px 10px; text-align: center; }",
@@ -318,7 +322,6 @@ const html = [
 ".alerta { background: rgba(231, 76, 60, 0.2); color: var(--red); border: 1px solid var(--red); }",
 ".normal { color: #888; }",
 ".col-destaque { background: rgba(255, 255, 255, 0.03); font-weight: bold; }",
-".info-text { font-size: 12px; color: #aaa; margin-top: 10px; text-align: center; }",
 "</style></head>",
 "<body>",
 "<h2>🎯 ROULETTE VIP CONTROL</h2>",
@@ -343,7 +346,7 @@ const html = [
 "<option value='204'>⚡ Mega Roulette</option>",
 "<option value='225'>🏎️ Auto-Roulette</option>",
 "</select>",
-"<textarea id='htmlBox' rows='2' placeholder='Cole os 500 giros aqui...'></textarea>",
+"<textarea id='htmlBox' rows='2' placeholder='Cole HTML se não usar o Robô...'></textarea>",
 "<button onclick='enviarHtml()'>SALVAR GIROS</button>",
 "</div>",
 "</div>",
@@ -370,16 +373,16 @@ const html = [
 "</table></div></div>",
 
 "<div class='card' style='text-align:center'>",
-"<b style='color:var(--green)'>🤖 Auto-Alimentação para o Tablet</b>",
+"<b style='color:var(--green)'>🤖 Instalação do Robô Automático</b>",
 "<p style='font-size:13px;color:#aaa;text-align:left;line-height:1.5'>",
-"1. No navegador do tablet, adicione esta página aos <b>Favoritos</b>.<br>",
-"2. Edite o favorito. Mude o nome para <b>ROBO AUTO</b> e cole o código abaixo no campo do Endereço/URL:<br>",
+"1. No tablet, adicione qualquer página aos <b>Favoritos</b>.<br>",
+"2. Edite esse favorito, mude o nome para <b>ROBO AUTO</b> e cole o código abaixo no campo Endereço/URL:<br>",
 "</p>",
-"<textarea rows='3' readonly style='font-family:monospace;font-size:11px;color:#ffbb00;background:#111' onclick='this.select()'>",
-"javascript:(function(){ if(window.rInterval) clearInterval(window.rInterval); window.rInterval = setInterval(function(){ var d = document.querySelector('[data-testid=\"recent-results\"]'); if(d){ fetch('https://"+host+"/api/html-ingest', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tableId:'237',html:d.outerHTML})}).then(r=>console.log('Robo enviou')); } }, 5000); alert('ROBO ATIVADO! Lendo a mesa a cada 5 segundos...'); })();",
+"<textarea rows='4' readonly style='font-family:monospace;font-size:11px;color:#ffbb00;background:#111' onclick='this.select()'>",
+"javascript:(function(){ if(window.rInterval) clearInterval(window.rInterval); var url = 'https://"+host+"/api/html-ingest'; function extrair() { var hist = document.querySelector('[data-testid=\"game-statistics\"]'); if(hist){ fetch(url, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tableId:'237',html:hist.outerHTML})}).then(r=>console.log('500 enviados')); } var aoVivo = document.querySelector('[data-testid=\"recent-results\"]') || document.querySelector('#root > div.by_bz > div.gv_bA.by_bA > div.Mp_Iv > div.Mp_jg > div.Mp_My > div.qb_qe > div.RA_RB > div > div.fv_fB > div.fv_fM > div > div'); if(aoVivo){ fetch(url, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tableId:'237',html:aoVivo.outerHTML})}); } } extrair(); window.rInterval = setInterval(extrair, 5000); alert('ROBÔ ATIVADO! \\n\\n1. Abra o gráfico de estatísticas para sugar os 500 giros.\\n2. Feche o gráfico e ele continuará sugando a barra ao vivo a cada 5s!'); })();",
 "</textarea>",
 "<p style='font-size:13px;color:#aaa;text-align:left;margin-bottom:0'>",
-"3. Abra a roleta no cassino, digite <b>ROBO AUTO</b> na barra de endereços e clique no favorito. Ele vai ler a barra de resultados sozinho a cada 5s e mandar pra cá!",
+"3. Abra a roleta, clique no favorito <b>ROBO AUTO</b>. Depois <b>abra as estatísticas na tela do jogo por 2 segundos</b> para o robô sugar os 500 giros. O resto ele faz sozinho!",
 "</p>",
 "</div>",
 
@@ -419,6 +422,7 @@ const html = [
 "let j=await r.json();",
 "document.getElementById('htmlBox').value='';",
 "carregarRadar();",
+"if(j.status==='error') alert(j.message);",
 "}catch(e){alert('Erro: '+e.message);}",
 "}",
 "async function salvarConfig(){",
