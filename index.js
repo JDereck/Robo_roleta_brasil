@@ -7,7 +7,7 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json({ limit: "5mb" }));
 app.use(express.urlencoded({ extended: true, limit: "5mb" }));
 
-const GAS_WEBHOOK_URL = process.env.GAS_WEBHOOK_URL || "";
+const GAS_WEBHOOK_URL = process.env.GAS_WEBHOOK_URL || "https://script.google.com/macros/s/AKfycbyyWyc_z7InWOGkC4wIJ85fqPnlmsyuu9OeKHKFypcvgz_nw64I7JwcQqPrSwBA1eyh/exec";
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN || "";
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || "";
 const JSESSIONID = process.env.JSESSIONID || "";
@@ -85,7 +85,38 @@ ultimoErro: null
 };
 
 // =====================================================
-// EXTRATOR DE HTML (GAME-STATISTICS E RECENT-RESULTS)
+// INTEGRAÇÃO COM GOOGLE SHEETS (WEBHOOK)
+// =====================================================
+
+async function sincronizarLoteComPlanilha(tableId, spins, alertar = false) {
+if (!GAS_WEBHOOK_URL) return;
+try {
+await axios.post(GAS_WEBHOOK_URL, {
+type: "SYNC_BATCH",
+tableId: tableId,
+alertar: alertar,
+spins: spins
+}, { timeout: 15000 });
+} catch (err) {
+console.error("Erro ao sincronizar lote com a planilha:", err.message);
+}
+}
+
+async function enviarGiroParaPlanilha(tableId, spin) {
+if (!GAS_WEBHOOK_URL) return;
+try {
+await axios.post(GAS_WEBHOOK_URL, {
+type: "NEW_SPIN",
+tableId: tableId,
+spin: spin
+}, { timeout: 10000 });
+} catch (err) {
+console.error("Erro ao enviar giro avulso para a planilha:", err.message);
+}
+}
+
+// =====================================================
+// EXTRATOR DE HTML E SINCRONIZAÇÃO
 // =====================================================
 
 function extrairNumerosDoHtml(htmlBruto) {
@@ -161,13 +192,11 @@ throw new Error("Nenhum resultado single-result foi encontrado no HTML enviado."
 
 const agora = new Date().toISOString();
 
-// CASO 1: CARGA INICIAL (OU ENVIO DO BLOCO DE 500 GIROS)
 if (!mesa.carregado500 || itens.length >= 100 || extraido.tipoDetectado === "game-statistics") {
 const totalBase = itens.slice(0, config.limiteHistorico);
 mesa.historico = [];
 mesa.contadorSequencialHtml = 0;
 
-// Monta do mais antigo para o mais recente para numerar o ID sequencial corretamente
 const doMaisAntigo = totalBase.slice().reverse();
 for (const item of doMaisAntigo) {
 mesa.contadorSequencialHtml += 1;
@@ -186,9 +215,12 @@ origem: "html_" + extraido.tipoDetectado
 mesa.ultimoGameId = mesa.historico[0].gameId;
 mesa.carregado500 = true;
 mesa.tableIdUsado = "HTML_DOM";
-mesa.statusConexao = "Conectada via HTML (" + mesa.historico.length + " giros na base)";
+mesa.statusConexao = "Conectada via HTML (" + mesa.historico.length + " giros)";
 mesa.ultimaAtualizacao = agora;
 mesa.coletor.ultimoErro = null;
+
+// Sincroniza o lote completo na planilha em segundo plano
+sincronizarLoteComPlanilha(idMesa, mesa.historico, false);
 
 return {
 modo: "CARGA_COMPLETA",
@@ -200,15 +232,13 @@ ultimos5Giros: mesa.historico.slice(0, 5)
 };
 }
 
-// CASO 2: ATUALIZAÇÃO AO VIVO (RECENT-RESULTS)
 const numerosRecentes = itens.map(x => x.number);
 const numerosHistorico = mesa.historico.map(x => x.number);
 
 const novosMaisRecentePrimeiro = descobrirNovosPorAlinhamento(numerosRecentes, numerosHistorico);
 
 if (novosMaisRecentePrimeiro === null) {
-mesa.statusConexao = "Atenção - fila ao vivo sem sobreposição com o histórico atual";
-throw new Error("Não foi possível alinhar a barra ao vivo com o histórico. Envie novamente o bloco de 500 giros para ressincronizar.");
+throw new Error("Não foi possível alinhar a barra ao vivo com o histórico. Envie novamente o bloco de 500 giros.");
 }
 
 const novosOrdemCronologica = novosMaisRecentePrimeiro.slice().reverse();
@@ -228,6 +258,9 @@ origem: "html_" + extraido.tipoDetectado
 };
 mesa.historico.unshift(novoGiro);
 girosInseridos.push(novoGiro);
+
+// Envia cada giro novo para a planilha
+enviarGiroParaPlanilha(idMesa, novoGiro);
 }
 
 mesa.historico = mesa.historico.slice(0, config.limiteHistorico);
@@ -255,7 +288,6 @@ app.post("/api/html-ingest", (req, res) => {
 try {
 const idMesa = String(req.body.tableId || "237").trim();
 const html = String(req.body.html || "");
-
 const resultado = sincronizarMesaPorHtml(idMesa, html);
 return res.json({ status: "success", idMesa, resultado });
 } catch (err) {
@@ -272,12 +304,7 @@ res.json({ status: "online", servidor: "ROULETTE CONTROL", horario: new Date().t
 });
 
 app.get("/api/state", (req, res) => {
-res.json({
-config,
-statusSistema,
-catalogo: CATALOGO_MESAS,
-estadoMesas
-});
+res.json({ config, statusSistema, catalogo: CATALOGO_MESAS, estadoMesas });
 });
 
 app.get("/api/mesa/:id", (req, res) => {
@@ -354,7 +381,7 @@ return resposta.data;
 }
 
 async function consultarPragmatic(idMesa, quantidade) {
-if (!JSESSIONID) throw new Error("JSESSIONID não configurado (usando modo HTML ou aguardando sessão).");
+if (!JSESSIONID) throw new Error("JSESSIONID não configurado.");
 const cadastro = CATALOGO_MESAS[idMesa] || { id: idMesa, tableIdApi: idMesa };
 const candidatos = [];
 if (cadastro.tableIdApi) candidatos.push(cadastro.tableIdApi);
@@ -394,6 +421,7 @@ mesa.ultimoGameId = mesa.historico[0].gameId;
 mesa.carregado500 = true;
 mesa.statusConexao = "Conectada via API";
 mesa.ultimaAtualizacao = new Date().toISOString();
+sincronizarLoteComPlanilha(id, mesa.historico, false);
 return;
 }
 
@@ -404,6 +432,7 @@ const novosJogos = jogos.slice(0, indiceAnterior).reverse();
 for (const jogo of novosJogos) {
 if (!mesa.historico.some(reg => reg.gameId === jogo.gameId)) {
 mesa.historico.unshift(jogo);
+enviarGiroParaPlanilha(id, jogo);
 }
 }
 mesa.historico = mesa.historico.slice(0, config.limiteHistorico);
@@ -426,24 +455,24 @@ app.get("/", (req, res) => {
 const html = [
 "<!DOCTYPE html><html lang='pt-BR'><head><meta charset='UTF-8'>",
 "<meta name='viewport' content='width=device-width, initial-scale=1'>",
-"<title>ROULETTE CONTROL - Teste HTML</title></head>",
+"<title>ROULETTE CONTROL - Sincronização Google Sheets</title></head>",
 "<body style='background:#111;color:#eee;font-family:Arial;padding:18px;max-width:700px;margin:auto'>",
 "<h2 style='color:#00ffcc;margin-bottom:5px'>ROULETTE CONTROL</h2>",
-"<p style='color:#aaa;margin-top:0'>Etapa 1: Validação de Coleta (500 Giros + Ao Vivo)</p>",
+"<p style='color:#aaa;margin-top:0'>Etapa 3: Sincronização Render ↔ Google Sheets ativa</p>",
 "<div style='background:#1e1e1e;padding:15px;border-radius:8px;border:1px solid #333'>",
 "<label><b>Mesa:</b></label><br>",
 "<input id='tableId' value='237' style='width:100%;padding:8px;margin:6px 0 12px 0;background:#222;color:#fff;border:1px solid #555;border-radius:4px'>",
-"<label><b>Cole aqui o HTML (game-statistics de 500 giros OU recent-results ao vivo):</b></label><br>",
+"<label><b>Cole o HTML (500 giros ou ao vivo):</b></label><br>",
 "<textarea id='htmlBox' rows='6' style='width:100%;padding:8px;margin-top:6px;background:#222;color:#0f0;border:1px solid #555;border-radius:4px' placeholder='Cole a div aqui...'></textarea>",
-"<button onclick='enviarHtml()' style='width:100%;padding:12px;margin-top:10px;background:#00ffcc;color:#000;font-weight:bold;border:none;border-radius:6px;font-size:16px'>PROCESSAR HTML</button>",
+"<button onclick='enviarHtml()' style='width:100%;padding:12px;margin-top:10px;background:#00ffcc;color:#000;font-weight:bold;border:none;border-radius:6px;font-size:16px'>PROCESSAR E SALVAR NA PLANILHA</button>",
 "<button onclick='limparCaixa()' style='width:100%;padding:8px;margin-top:8px;background:#333;color:#fff;border:none;border-radius:6px'>Limpar Caixa de Texto</button>",
 "</div>",
 "<pre id='saida' style='background:#000;color:#00ffcc;padding:12px;border-radius:8px;margin-top:15px;white-space:pre-wrap;word-break:break-word'>Aguardando envio...</pre>",
-"<p><a style='color:#00ffcc' href='/api/mesa/237'>Ver JSON completo da Mesa 237 (/api/mesa/237)</a></p>",
+"<p><a style='color:#00ffcc' href='/api/mesa/237'>Ver JSON da Mesa 237 (/api/mesa/237)</a></p>",
 "<script>",
 "async function enviarHtml(){",
 "const out=document.getElementById('saida');",
-"out.textContent='Processando...';",
+"out.textContent='Processando e enviando para o Google Sheets...';",
 "try{",
 "const r=await fetch('/api/html-ingest',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tableId:document.getElementById('tableId').value,html:document.getElementById('htmlBox').value})});",
 "const j=await r.json();",
