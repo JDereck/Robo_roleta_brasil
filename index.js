@@ -233,8 +233,8 @@ if (!itens || !itens.length) return;
 
 const agora = new Date().toISOString();
 
-// Carga Inicial (Se vierem 100+ giros ou mesa vazia)
-if (!mesa.carregado500 || itens.length >= 100) {
+// Carga Inicial Flexível (Aceita bases menores que 500 se não tiver carregado nada)
+if (!mesa.carregado500 || (itens.length >= 50 && !origem.includes("API"))) {
 const totalBase = itens.slice(0, config.limiteHistorico);
 mesa.historico = [];
 mesa.contadorSequencial = 0;
@@ -262,7 +262,6 @@ const novos = descobrirNovosPorAlinhamento(numRecentes, numHistorico);
 if (novos === null || novos.length === 0) return;
 
 const novosInvertidos = novos.slice().reverse();
-// Pega os itens reais correspondentes aos números novos
 const itensNovosReais = itens.slice(0, novos.length).reverse();
 
 for (let i = 0; i < novosInvertidos.length; i++) {
@@ -292,7 +291,13 @@ for (const idMesa of Object.keys(CATALOGO_MESAS)) {
 const mesaInfo = CATALOGO_MESAS[idMesa];
 if (mesaInfo.ativa && mesaInfo.blitzUrl) {
 try {
-const resposta = await axios.get(mesaInfo.blitzUrl, { timeout: 10000 });
+const resposta = await axios.get(mesaInfo.blitzUrl, {
+timeout: 10000,
+headers: {
+"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+"Accept": "application/json, text/plain, */*"
+}
+});
 const arrayJogos = localizarArrayDeJogos(resposta.data);
 if (arrayJogos) {
 const itensNormalizados = arrayJogos.map(normalizarJogoJSON).filter(Boolean);
@@ -437,66 +442,4 @@ const html = [
 "<th>Saída <span id='hdr-x-1'>9</span></th>",
 "<th class='col-destaque' style='color:var(--green)'>Saída <span id='hdr-x'>10</span></th>",
 "<th>Saída <span id='hdr-x-mais-1'>11</span></th>",
-"<th>Status</th>",
-"</tr></thead>",
-"<tbody id='radarBody'><tr><td colspan='7'>Buscando dados na API...</td></tr></tbody>",
-"</table></div></div>",
-
-"<script>",
-"let dadosGlobais=null;",
-"async function carregarRadar(){",
-"try{",
-"let r=await fetch('/api/radar-todas');",
-"let j=await r.json();",
-"dadosGlobais=j;",
-"document.getElementById('lblConexoes').textContent = j.conexoes;",
-"let x = j.config.maxSaidas;",
-"document.getElementById('hdr-x-1').textContent = x - 1;",
-"document.getElementById('hdr-x').textContent = x;",
-"document.getElementById('hdr-x-mais-1').textContent = x + 1;",
-"renderizarTabela();",
-"}catch(e){}",
-"}",
-"function renderizarTabela(){",
-"if(!dadosGlobais)return;",
-"let tbody=document.getElementById('radarBody');",
-"tbody.innerHTML='';",
-"let filtro=document.getElementById('filtroRadar').value;",
-"dadosGlobais.radar.forEach(c=>{",
-"if(filtro==='gatilho'&&!c.status.includes('GATILHO')&&!c.status.includes('FALTA'))return;",
-"let tr=document.createElement('tr');",
-"tr.innerHTML=`<td><b>${c.roleta}</b></td><td>${c.id}</td><td style='text-align:left;font-size:12px'>${c.conjunto}</td><td>${c.x_menos_1}</td><td class='col-destaque'>${c.x}</td><td>${c.x_mais_1}</td><td><span class='badge ${c.badge}'>${c.status}</span></td>`;",
-"tbody.appendChild(tr);",
-"});",
-"}",
-"async function enviarHtml(){",
-"let mesa=document.getElementById('mesaSelect').value;",
-"let html=document.getElementById('htmlBox').value;",
-"if(!html)return alert('Cole o HTML primeiro!');",
-"try{",
-"let r=await fetch('/api/html-ingest',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tableId:mesa,html})});",
-"let j=await r.json();",
-"document.getElementById('htmlBox').value='';",
-"carregarRadar();",
-"}catch(e){alert('Erro: '+e.message);}",
-"}",
-"async function salvarConfig(){",
-"let payload={",
-"janelaAlvo:document.getElementById('janelaAlvo').value,",
-"maxSaidas:document.getElementById('maxSaidas').value,",
-"avisoAntecipado:document.getElementById('avisoAntecipado').value,",
-"tamConjunto:document.getElementById('tamConjunto').value",
-"};",
-"await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});",
-"carregarRadar();",
-"}",
-"carregarRadar();",
-"setInterval(carregarRadar, 5000);",
-"</script></body></html>"
-].join("");
-res.send(html);
-});
-
-app.listen(PORT, () => {
-console.log("ROULETTE VIP rodando na porta " + PORT);
-});
+"<th>
