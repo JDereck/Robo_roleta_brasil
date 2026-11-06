@@ -19,26 +19,18 @@ const CILINDRO = [
 
 const CATALOGO_MESAS = {
 "237": { id: "237", tableIdApi: "rwbrzportrwa16rg", nome: "Roleta Brasileira", ativa: true },
-"204": { id: "204", tableIdApi: "204", nome: "Mega Roulette", ativa: false },
-"225": { id: "225", tableIdApi: "225", nome: "Auto-Roulette 1", ativa: false },
-"203": { id: "203", tableIdApi: "203", nome: "Speed Roulette 1", ativa: false },
-"206": { id: "206", tableIdApi: "206", nome: "Roulette Macao", ativa: false },
-"227": { id: "227", tableIdApi: "227", nome: "Roulette Azure", ativa: false },
-"230": { id: "230", tableIdApi: "230", nome: "Roulette Ruby", ativa: false },
-"201": { id: "201", tableIdApi: "201", nome: "Roulette 1 (Green)", ativa: false }
+"204": { id: "204", tableIdApi: "204", nome: "Mega Roulette", ativa: true },
+"225": { id: "225", tableIdApi: "225", nome: "Auto-Roulette 1", ativa: false }
 };
 
 const config = {
 statusRobo: "ATIVO",
-jsessionid: JSESSIONID,
 janelaAlvo: 100,
 avisoAntecipado: 98,
 maxSaidas: 10,
 tamConjunto: 6,
 maxEntradas: 3,
-bloquearSimultaneos: false,
-limiteHistorico: 500,
-intervaloColeta: 5000
+limiteHistorico: 500
 };
 
 const estadoMesas = {};
@@ -56,7 +48,7 @@ historico: [],
 ultimoGameId: null,
 contadorSequencialHtml: 0,
 carregado500: false,
-statusConexao: "Aguardando primeira consulta",
+statusConexao: "Aguardando dados",
 ultimaAtualizacao: null,
 radar: []
 };
@@ -119,7 +111,6 @@ status: statusAtual
 });
 }
 
-// Ordena pelo maior atraso (jogadasJanela)
 listaRadar.sort((a, b) => b.jogadasJanela - a.jogadasJanela);
 mesa.radar = listaRadar;
 return listaRadar;
@@ -132,27 +123,18 @@ return listaRadar;
 async function sincronizarLoteComPlanilha(tableId, spins) {
 if (!GAS_WEBHOOK_URL) return;
 try {
-await axios.post(GAS_WEBHOOK_URL, {
-type: "SYNC_BATCH",
-tableId: tableId,
-alertar: false,
-spins: spins
-}, { timeout: 15000 });
+await axios.post(GAS_WEBHOOK_URL, { type: "SYNC_BATCH", tableId, alertar: false, spins }, { timeout: 15000 });
 } catch (err) {
-console.error("Erro ao sincronizar lote com a planilha:", err.message);
+console.error("Erro ao sincronizar lote:", err.message);
 }
 }
 
 async function enviarGiroParaPlanilha(tableId, spin) {
 if (!GAS_WEBHOOK_URL) return;
 try {
-await axios.post(GAS_WEBHOOK_URL, {
-type: "NEW_SPIN",
-tableId: tableId,
-spin: spin
-}, { timeout: 10000 });
+await axios.post(GAS_WEBHOOK_URL, { type: "NEW_SPIN", tableId, spin }, { timeout: 10000 });
 } catch (err) {
-console.error("Erro ao enviar giro para a planilha:", err.message);
+console.error("Erro ao enviar giro:", err.message);
 }
 }
 
@@ -162,13 +144,7 @@ console.error("Erro ao enviar giro para a planilha:", err.message);
 
 function extrairNumerosDoHtml(htmlBruto) {
 if (!htmlBruto || typeof htmlBruto !== "string") return { tipoDetectado: "desconhecido", itens: [] };
-
-let tipoDetectado = "lista_html";
-if (htmlBruto.includes('data-testid="game-statistics"')) {
-tipoDetectado = "game-statistics";
-} else if (htmlBruto.includes('data-testid="recent-results"')) {
-tipoDetectado = "recent-results";
-}
+let tipoDetectado = htmlBruto.includes('data-testid="game-statistics"') ? "game-statistics" : "recent-results";
 
 const regexBloco = /<div[^>]*data-testid="single-result"[^>]*>[\s\S]*?<\/div>/gi;
 const blocos = htmlBruto.match(regexBloco) || [];
@@ -190,7 +166,6 @@ if (Number.isInteger(numero) && numero >= 0 && numero <= 36) {
 itens.push({ number: numero, betCode: matchBetCode ? String(matchBetCode[1]) : null });
 }
 }
-
 return { tipoDetectado, itens };
 }
 
@@ -215,7 +190,7 @@ if (!mesa) throw new Error("Mesa não encontrada: " + idMesa);
 
 const extraido = extrairNumerosDoHtml(htmlBruto);
 const itens = extraido.itens;
-if (!itens.length) throw new Error("Nenhum resultado encontrado no HTML enviado.");
+if (!itens.length) throw new Error("Nenhum resultado encontrado no HTML.");
 
 const agora = new Date().toISOString();
 
@@ -232,7 +207,7 @@ mesa.historico.unshift({
 tableId: idMesa,
 gameId: gameIdGerado,
 number: item.number,
-rawResult: String(item.number) + (item.betCode ? " (betCode:" + item.betCode + ")" : ""),
+rawResult: String(item.number),
 timestamp: null,
 coletadoEm: agora,
 origem: "html_" + extraido.tipoDetectado
@@ -246,7 +221,6 @@ mesa.ultimaAtualizacao = agora;
 
 sincronizarLoteComPlanilha(idMesa, mesa.historico);
 calcularRadarMesa(idMesa);
-
 return { modo: "CARGA_COMPLETA", totalArmazenado: mesa.historico.length };
 }
 
@@ -255,7 +229,7 @@ const numerosHistorico = mesa.historico.map(x => x.number);
 const novosMaisRecentePrimeiro = descobrirNovosPorAlinhamento(numerosRecentes, numerosHistorico);
 
 if (novosMaisRecentePrimeiro === null) {
-throw new Error("Não foi possível alinhar. Envie o bloco de 500 giros novamente.");
+throw new Error("Não foi possível alinhar a barra ao vivo. Envie os 500 giros.");
 }
 
 const novosOrdemCronologica = novosMaisRecentePrimeiro.slice().reverse();
@@ -284,9 +258,12 @@ mesa.statusConexao = "Conectada (Ao Vivo)";
 mesa.ultimaAtualizacao = agora;
 
 calcularRadarMesa(idMesa);
-
 return { modo: "ATUALIZACAO_AO_VIVO", novosAdicionados: girosInseridos.length, totalArmazenado: mesa.historico.length };
 }
+
+// =====================================================
+// ROTAS DA API
+// =====================================================
 
 app.post("/api/html-ingest", (req, res) => {
 try {
@@ -304,75 +281,156 @@ const id = String(req.params.id);
 const mesa = estadoMesas[id];
 if (!mesa) return res.status(404).json({ status: "error", message: "Mesa não encontrada." });
 const radar = calcularRadarMesa(id);
-res.json({ status: "success", tableId: id, totalGiros: mesa.historico.length, radar });
+res.json({
+status: "success",
+tableId: id,
+nomeMesa: mesa.nome,
+totalGiros: mesa.historico.length,
+statusConexao: mesa.statusConexao,
+ultimoGiro: mesa.historico[0] ? mesa.historico[0].number : "-",
+radar
+});
 });
 
-app.get("/health", (req, res) => {
-res.json({ status: "online", horario: new Date().toISOString() });
+app.post("/api/config", (req, res) => {
+const b = req.body || {};
+if (b.statusRobo) config.statusRobo = b.statusRobo;
+if (b.janelaAlvo) config.janelaAlvo = Number(b.janelaAlvo);
+if (b.avisoAntecipado) config.avisoAntecipado = Number(b.avisoAntecipado);
+if (b.maxSaidas) config.maxSaidas = Number(b.maxSaidas);
+if (b.tamConjunto) config.tamConjunto = Number(b.tamConjunto);
+
+// Recalcula o radar de todas as mesas ativas com os novos parâmetros
+Object.keys(estadoMesas).forEach(id => calcularRadarMesa(id));
+
+res.json({ status: "success", config });
 });
 
 app.get("/api/state", (req, res) => {
-res.json({ config, estadoMesas });
+res.json({ config, catalogo: CATALOGO_MESAS });
 });
 
 // =====================================================
-// PAINEL WEB ADMINISTRATIVO PARA O TABLET
+// PAINEL WEB PROFISSIONAL PARA O TABLET
 // =====================================================
 
 app.get("/", (req, res) => {
 const html = [
 "<!DOCTYPE html><html lang='pt-BR'><head><meta charset='UTF-8'>",
 "<meta name='viewport' content='width=device-width, initial-scale=1'>",
-"<title>ROULETTE CONTROL - Painel</title>",
+"<title>ROULETTE CONTROL - Painel Executivo</title>",
 "<style>",
-"body{background:#111;color:#eee;font-family:Arial;padding:15px;max-width:800px;margin:auto}",
-"h2{color:#00ffcc;margin-bottom:5px}",
-".card{background:#1e1e1e;padding:12px;border-radius:8px;border:1px solid #333;margin-bottom:15px}",
-"textarea{width:100%;padding:8px;background:#222;color:#0f0;border:1px solid #555;border-radius:4px}",
-"button{width:100%;padding:12px;background:#00ffcc;color:#000;font-weight:bold;border:none;border-radius:6px;font-size:16px;cursor:pointer;margin-top:8px}",
-"table{width:100%;border-collapse:collapse;margin-top:10px;font-size:14px}",
-"th,td{border:1px solid #444;padding:8px;text-align:center}",
+"body{background:#121212;color:#eee;font-family:Arial,sans-serif;padding:12px;max-width:850px;margin:auto}",
+"h2{color:#00ffcc;margin:5px 0;font-size:20px}",
+".grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}",
+"@media(max-width:600px){.grid{grid-template-columns:1fr}}",
+".card{background:#1e1e1e;padding:12px;border-radius:8px;border:1px solid #333;margin-bottom:10px}",
+"textarea,select,input{width:100%;padding:8px;background:#222;color:#0f0;border:1px solid #555;border-radius:4px;box-sizing:border-box;margin-top:4px}",
+"button{width:100%;padding:10px;background:#00ffcc;color:#000;font-weight:bold;border:none;border-radius:6px;font-size:15px;cursor:pointer;margin-top:8px}",
+"table{width:100%;border-collapse:collapse;margin-top:8px;font-size:13px}",
+"th,td{border:1px solid #444;padding:6px;text-align:center}",
 "th{background:#222;color:#00ffcc}",
+".badge{padding:3px 6px;border-radius:4px;font-weight:bold;font-size:11px}",
+".ativo{background:#004d40;color:#00ffcc}",
+".alerta{background:#4d3300;color:#ffbb00}",
+".normal{background:#222;color:#aaa}",
 "</style></head>",
 "body>",
 "<h2>ROULETTE CONTROL</h2>",
-"<p style='color:#aaa'>Painel Administrativo & Radar de Conjuntos (Mesa 237)</p>",
+"<p style='color:#aaa;margin:0 0 10px 0;font-size:13px'>Painel de Auditoria & Monitoramento Estatístico</p>",
+"<div class='grid'>",
 "<div class='card'>",
-"<b>Alimentar Dados (HTML):</b><br>",
-"<textarea id='htmlBox' rows='4' placeholder='Cole o HTML aqui...'></textarea>",
-"<button onclick='enviarHtml()'>PROCESSAR E SALVAR</button>",
+"<b>Mesa Selecionada:</b>",
+"<select id='mesaSelect' onchange='mudarMesa()'>",
+"<option value='237'>Roleta Brasileira (237)</option>",
+"<option value='204'>Mega Roulette (204)</option>",
+"<option value='225'>Auto-Roulette (225)</option>",
+"</select>",
+"<b style='display:block;margin-top:8px'>Status do Robô / Alertas:</b>",
+"<select id='statusRobo' onchange='salvarConfig()'>",
+"<option value='ATIVO'>ATIVO</option>",
+"<option value='PAUSADO'>PAUSADO</option>",
+"</select>",
+"<b style='display:block;margin-top:8px'>Alimentar HTML:</b>",
+"<textarea id='htmlBox' rows='3' placeholder='Cole o HTML aqui...'></textarea>",
+"<button onclick='enviarHtml()'>PROCESSAR DADOS</button>",
 "</div>",
 "<div class='card'>",
-"<h3 style='margin-top:0;color:#00ffcc'>📡 Radar dos 37 Conjuntos</h3>",
-"<button onclick='carregarRadar()' style='background:#333;color:#fff;padding:8px'>Atualizar Radar</button>",
-"<div style='overflow-x:auto'>",
-"<table><thead><tr><th>ID</th><th>Conjunto (6 Vizinhos)</th><th>Jogadas</th><th>Saídas</th><th>Status</th></tr></thead>",
-"<tbody id='radarBody'><tr><td colspan='5'>Carregando radar...</td></tr></tbody>",
+"<b>Parâmetros do Motor:</b>",
+"<div style='font-size:12px;margin-top:5px'>",
+"Janela Alvo: <input type='number' id='janelaAlvo' value='100' onchange='salvarConfig()' style='margin-bottom:4px'>",
+"Máx. Saídas: <input type='number' id='maxSaidas' value='10' onchange='salvarConfig()' style='margin-bottom:4px'>",
+"Vizinhos: <input type='number' id='tamConjunto' value='6' onchange='salvarConfig()'>",
+"</div>",
+"<div style='background:#111;padding:8px;border-radius:6px;margin-top:10px;font-size:12px'>",
+"<div>Giros na Base: <b id='lblGiros' style='color:#00ffcc'>0</b></div>",
+"<div>Último Sorteado: <b id='lblUltimo' style='color:#ffbb00'>-</b></div>",
+"<div>Conexão: <b id='lblStatus' style='color:#fff'>Aguardando</b></div>",
+"</div></div></div>",
+"<div class='card'>",
+"<div style='display:flex;justify-content:space-between;align-items:center'>",
+"<h3 style='margin:0;color:#00ffcc;font-size:15px'>📡 Radar dos 37 Conjuntos</h3>",
+"<select id='filtroRadar' onchange='renderizarTabela()' style='width:140px;padding:4px'>",
+"<option value='todos'>Todos (37)</option>",
+"<option value='gatilho'>Apenas Gatilho 🔥</option>",
+"</select>",
+"</div>",
+"<div style='overflow-x:auto;max-height:350px'>",
+"<table><thead><tr><th>ID</th><th>Conjunto (Vizinhos)</th><th>Jogadas</th><th>Saídas</th><th>Status</th></tr></thead>",
+"<tbody id='radarBody'><tr><td colspan='5'>Carregando...</td></tr></tbody>",
 "</table></div></div>",
 "<script>",
-"async function enviarHtml(){",
+"let dadosGlobais=null;",
+"async function carregarRadar(){",
+"let mesa=document.getElementById('mesaSelect').value;",
 "try{",
-"let r=await fetch('/api/html-ingest',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tableId:'237',html:document.getElementById('htmlBox').value})});",
+"let r=await fetch('/api/radar/'+mesa);",
 "let j=await r.json();",
-"alert('Sucesso: ' + JSON.stringify(j.resultado));",
+"dadosGlobais=j;",
+"document.getElementById('lblGiros').textContent=j.totalGiros;",
+"document.getElementById('lblUltimo').textContent=j.ultimoGiro;",
+"document.getElementById('lblStatus').textContent=j.statusConexao;",
+"renderizarTabela();",
+"}catch(e){console.error(e);}",
+"}",
+"function renderizarTabela(){",
+"if(!dadosGlobais)return;",
+"let tbody=document.getElementById('radarBody');",
+"tbody.innerHTML='';",
+"let filtro=document.getElementById('filtroRadar').value;",
+"dadosGlobais.radar.forEach(c=>{",
+"if(filtro==='gatilho'&&!c.status.includes('GATILHO'))return;",
+"let badgeClass='normal';",
+"if(c.status.includes('GATILHO'))badgeClass='ativo';",
+"else if(c.status.includes('PRÉ')||c.status.includes('FALTA'))badgeClass='alerta';",
+"let tr=document.createElement('tr');",
+"tr.innerHTML=`<td><b>${c.id}</b></td><td style='text-align:left;padding-left:10px'>${c.conjunto}</td><td>${c.jogadasJanela}</td><td>${c.saidasNaJanela}</td><td><span class='badge ${badgeClass}'>${c.status}</span></td>`;",
+"tbody.appendChild(tr);",
+"});",
+"}",
+"async function enviarHtml(){",
+"let mesa=document.getElementById('mesaSelect').value;",
+"try{",
+"let r=await fetch('/api/html-ingest',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tableId:mesa,html:document.getElementById('htmlBox').value})});",
+"let j=await r.json();",
+"alert('Sucesso: '+(j.resultado.modo||'Processado'));",
+"document.getElementById('htmlBox').value='';",
 "carregarRadar();",
 "}catch(e){alert('Erro: '+e.message);}",
 "}",
-"async function carregarRadar(){",
-"try{",
-"let r=await fetch('/api/radar/237');",
-"let j=await r.json();",
-"let tbody=document.getElementById('radarBody');",
-"tbody.innerHTML='';",
-"j.radar.forEach(c=>{",
-"let tr=document.createElement('tr');",
-"tr.innerHTML=`<td><b>${c.id}</b></td><td>${c.conjunto}</td><td>${c.jogadasJanela}</td><td>${c.saidasNaJanela}</td><td>${c.status}</td>`;",
-"tbody.appendChild(tr);",
-"});",
-"}catch(e){console.error(e);}",
-"}",
+"async function salvarConfig(){",
+"let payload={",
+"statusRobo:document.getElementById('statusRobo').value,",
+"janelaAlvo:document.getElementById('janelaAlvo').value,",
+"maxSaidas:document.getElementById('maxSaidas').value,",
+"tamConjunto:document.getElementById('tamConjunto').value",
+"};",
+"await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});",
 "carregarRadar();",
-"setInterval(carregarRadar, 10000);",
+"}",
+"function mudarMesa(){ carregarRadar(); }",
+"carregarRadar();",
+"setInterval(carregarRadar, 8000);",
 "</script></body></html>"
 ].join("");
 res.send(html);
