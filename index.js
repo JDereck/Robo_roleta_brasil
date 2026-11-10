@@ -8,14 +8,14 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json({ limit: "5mb" }));
 app.use(express.urlencoded({ extended: true, limit: "5mb" }));
 
-// Webhook do Google Sheets e Telegram
+// Webhook do Google Sheets
 const GAS_WEBHOOK_URL = process.env.GAS_WEBHOOK_URL || "https://script.google.com/macros/s/AKfycbyyWyc_z7InWOGkC4wIJ85fqPnlmsyuu9OeKHKFypcvgz_nw64I7JwcQqPrSwBA1eyh/exec";
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN || "9091680827:AAER8mF6-T5gJ8iL5VGK4EbCFCH4QY7lazc";
-const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || "824181525";
 
-// =========================================================================
-// PROJETO EQUILIBRIUM: SETOR ALVO EXCLUSIVO [0, 32, 15, 19, 4, 21]
-// =========================================================================
+// 👥 ADICIONE MAIS PESSOAS OU GRUPOS AQUI (Separe os IDs por vírgula)
+const TELEGRAM_CHAT_IDS = (process.env.TELEGRAM_CHAT_ID || "824181525").split(",").map(id => id.trim());
+
+// SETOR ALVO DO PROJETO EQUILIBRIUM
 const SETOR_EQUILIBRIUM = [0, 32, 15, 19, 4, 21];
 
 const config = {
@@ -39,23 +39,26 @@ const estadoMesas = {
         carregado: false,
         statusConexao: "🟢 Iniciando motor Equilibrium...",
         radar: [],
-        ultimoDiagnostico: {}
+        estatisticasDia: { greens: 0, reds: 0, emEntrada: false, tirosGastos: 0 }
     }
 };
 
 // =====================================================
-// TELEGRAM & GOOGLE SHEETS
+// TELEGRAM COMUNICADOR MÚLTIPLO
 // =====================================================
-async function enviarTelegram(texto) {
-    if (!TELEGRAM_TOKEN || !TELEGRAM_CHAT_ID) return;
-    try {
-        await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN.trim()}/sendMessage`, {
-            chat_id: String(TELEGRAM_CHAT_ID).trim(),
-            text: texto,
-            parse_mode: "Markdown"
-        }, { timeout: 10000 });
-    } catch (e) {
-        console.error("Erro Telegram:", e.message);
+async function enviarTelegramParaTodos(texto) {
+    if (!TELEGRAM_TOKEN || TELEGRAM_CHAT_IDS.length === 0) return;
+    
+    for (const chatId of TELEGRAM_CHAT_IDS) {
+        try {
+            await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN.trim()}/sendMessage`, {
+                chat_id: chatId,
+                text: texto,
+                parse_mode: "Markdown"
+            }, { timeout: 10000 });
+        } catch (e) {
+            console.error(`Erro Telegram para o chat ${chatId}:`, e.message);
+        }
     }
 }
 
@@ -67,7 +70,7 @@ async function sincronizarPlanilha(type, tableId, payload) {
 }
 
 // =====================================================
-// MOTOR ESTATÍSTICO EXCLUSIVO (SETOR EQUILIBRIUM)
+// MOTOR ESTATÍSTICO & ACOMPANHAMENTO DE GREENS / REDS
 // =====================================================
 function avaliarGatilhosSetor(girosRecentes) {
     let resultadosGatilhos = [];
@@ -75,10 +78,7 @@ function avaliarGatilhosSetor(girosRecentes) {
 
     config.gatilhos.forEach(g => {
         if (girosRecentes.length < g.janela) {
-            resultadosGatilhos.push({
-                nome: g.nome, janela: g.janela, atingido: false,
-                saidasContadas: 0, alvoSaidas: g.alvoSaidas
-            });
+            resultadosGatilhos.push({ nome: g.nome, janela: g.janela, atingido: false, saidasContadas: 0, alvoSaidas: g.alvoSaidas });
             return;
         }
 
@@ -95,11 +95,8 @@ function avaliarGatilhosSetor(girosRecentes) {
         if (atingido) gatilhoAtivoGeral = true;
 
         resultadosGatilhos.push({
-            nome: g.nome,
-            janela: g.janela,
-            alvoSaidas: g.alvoSaidas,
-            saidasContadas: contSaidas,
-            atingido: atingido
+            nome: g.nome, janela: g.janela, alvoSaidas: g.alvoSaidas,
+            saidasContadas: contSaidas, atingido: atingido
         });
     });
 
@@ -115,21 +112,61 @@ function calcularRadarMesa(idMesa, ultimoNumeroSorteado) {
     const girosRecentes = mesa.historico.map(h => h.number);
     const { resultadosGatilhos, gatilhoAtivoGeral } = avaliarGatilhosSetor(girosRecentes);
 
-    // Dispara alerta apenas para o Setor Equilibrium se o robô estiver ATIVO
-    if (gatilhoAtivoGeral && config.statusRobo === "ATIVO" && ultimoNumeroSorteado !== undefined) {
-        let ativadosStr = resultadosGatilhos.filter(g => g.atingido).map(g => g.nome).join(", ");
-        let assinaturaAlerta = `${ativadosStr}_${girosRecentes[0]}`;
+    // Gestão de Entradas, Greens e Reds em tempo real
+    if (ultimoNumeroSorteado !== undefined) {
+        const acertouSetor = SETOR_EQUILIBRIUM.includes(ultimoNumeroSorteado);
 
-        // Evita flood de mensagens repetidas para o mesmo gatilho consecutivo
-        if (assinaturaAlerta !== ultimoAlertaDisparadoAssinatura) {
-            enviarTelegram(
-                `🚨 *PROJETO EQUILIBRIUM - SINAL DETECTADO!*\n` +
-                `🎯 Mesa: *${mesa.nome}*\n` +
-                `🔥 Gatilhos Ativos: *${ativadosStr}*\n` +
-                `📍 Setor Alvo: \`[0, 32, 15, 19, 4, 21]\`\n` +
-                `🎲 Último número: *${ultimoNumeroSorteado}*`
-            );
-            ultimoAlertaDisparadoAssinatura = assinaturaAlerta;
+        if (mesa.estatisticasDia.emEntrada) {
+            if (acertouSetor) {
+                // GREEN!
+                mesa.estatisticasDia.greens++;
+                mesa.estatisticasDia.emEntrada = false;
+                mesa.estatisticasDia.tirosGastos = 0;
+
+                enviarTelegramParaTodos(
+                    `✅ *GREEN NO SETOR EQUILIBRIUM!*\n` +
+                    `🎯 Número Sorteado: *${ultimoNumeroSorteado}* (Acertou em cheio no setor alvo!)\n\n` +
+                    `📊 *Placar Parcial do Dia:*\n` +
+                    `✅ Greens: ${mesa.estatisticasDia.greens} | ❌ Reds: ${mesa.estatisticasDia.reds}`
+                );
+            } else {
+                // Errou o tiro, avança para o próximo (máximo de 3 entradas)
+                mesa.estatisticasDia.tirosGastos++;
+                if (mesa.estatisticasDia.tirosGastos >= 3) {
+                    // RED! Acabaram os tiros
+                    mesa.estatisticasDia.reds++;
+                    mesa.estatisticasDia.emEntrada = false;
+                    mesa.estatisticasDia.tirosGastos = 0;
+
+                    enviarTelegramParaTodos(
+                        `❌ *RED NO SETOR EQUILIBRIUM!*\n` +
+                        `O último número foi *${ultimoNumeroSorteado}*. Não bateu nas 3 entradas estipuladas.\n\n` +
+                        `📊 *Placar Parcial do Dia:*\n` +
+                        `✅ Greens: ${mesa.estatisticasDia.greens} | ❌ Reds: ${mesa.estatisticasDia.reds}`
+                    );
+                }
+            }
+        }
+
+        // Se o robô estiver ativo e houver gatilho disparado
+        if (gatilhoAtivoGeral && config.statusRobo === "ATIVO" && !mesa.estatisticasDia.emEntrada) {
+            let ativadosStr = resultadosGatilhos.filter(g => g.atingido).map(g => g.nome).join(", ");
+            let assinaturaAlerta = `${ativadosStr}_${girosRecentes[0]}`;
+
+            if (assinaturaAlerta !== ultimoAlertaDisparadoAssinatura) {
+                mesa.estatisticasDia.emEntrada = true;
+                mesa.estatisticasDia.tirosGastos = 0;
+                ultimoAlertaDisparadoAssinatura = assinaturaAlerta;
+
+                enviarTelegramParaTodos(
+                    `🚨 *EQUILIBRIUM - SINAL DETECTADO!*\n` +
+                    `🎯 Mesa: *${mesa.nome}*\n` +
+                    `🔥 Gatilhos Ativos: *${ativadosStr}*\n` +
+                    `📍 Setor Alvo: \`[0, 32, 15, 19, 4, 21]\`\n` +
+                    `🎲 Último número: *${ultimoNumeroSorteado}*\n\n` +
+                    `🚨 *JOGAR NO SETOR (Fazer até 3 entradas)*`
+                );
+            }
         }
     }
 
@@ -202,12 +239,8 @@ function processarNovosGiros(idMesa, numerosArray, origemNome = "auto_cloud") {
     }
 }
 
-// =====================================================
-// EXTRATOR UNIVERSAL DE DADOS DA API
-// =====================================================
 function extrairQualquerFormato(rawData) {
     if (!rawData) return [];
-
     if (Array.isArray(rawData) && rawData.every(x => typeof x === "number")) {
         return rawData.filter(n => n >= 0 && n <= 36);
     }
@@ -250,9 +283,6 @@ function extrairQualquerFormato(rawData) {
     return [];
 }
 
-// =====================================================
-// COLETOR AUTOMÁTICO
-// =====================================================
 let ultimaAssinaturaColetor = "";
 let emExecucao = false;
 
@@ -283,24 +313,17 @@ async function coletarResultadosAutomaticamente() {
 
     let recentes = [];
     let rotaVencedora = "";
-    const relatorioErros = {};
 
     for (const rota of rotas) {
         try {
-            const response = await axios.get(rota.url, {
-                headers: rota.headers,
-                timeout: 6500
-            });
-
+            const response = await axios.get(rota.url, { headers: rota.headers, timeout: 6500 });
             const extraidos = extrairQualquerFormato(response.data);
             if (extraidos && extraidos.length > 0) {
                 recentes = extraidos;
                 rotaVencedora = rota.nome;
                 break;
             }
-        } catch (err) {
-            relatorioErros[rota.nome] = err.message;
-        }
+        } catch (err) {}
     }
 
     try {
@@ -449,10 +472,10 @@ app.get("/", (req, res) => {
         "let hora = new Date(item.timestamp).toLocaleTimeString();",
         "tr.innerHTML=`<td>${index+1}</td><td><span class='bola-num'>${item.number}</span></td><td><small>${item.origem}</small></td><td>${hora}</td>`;",
         "hbody.appendChild(tr);});}catch(e){}}",
-        "async function enviarManual(){ let txt=document.getElementById('txtManual').value.trim(); if(!txt)return;",
-        "await fetch('/api/spins',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tableId:'237',numbers:txt})});",
+        "async function enviarManual(){ let textVal=document.getElementById('txtManual').value.trim(); if(!textVal)return;",
+        "await fetch('/api/spins',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tableId:'237',numbers:textVal})});",
         "document.getElementById('txtManual').value=''; carregarRadar();}",
-        "async function salvarConfig(){ let payload={statusRobo:document.getElementById('statusRobo').value};",
+        "async function salvarConfig(){ let payload={statusRobo:document.getElementById('statusRobo'].value};",
         "await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}); carregarRadar();}",
         "carregarRadar(); setInterval(carregarRadar,3000);",
         "</script></body></html>"
