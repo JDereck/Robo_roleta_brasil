@@ -310,7 +310,9 @@ const html = [
 "tbody.innerHTML='';",
 "radar.gatilhos.forEach(g=>{",
 "let tr=document.createElement('tr');",
-"tr.innerHTML=`<td><b>${g.nome}</b></td><td>${g.janela}</td><td>${g.alvoSaidas}</td><td><b>${g.saidasContadas}</b></td><td><span class='badge ${g.atingido?'ativo':'normal'}'>${g.atingido?'🔥 ATIVO':'Aguardando'}</span></td>`;",
+"let alvo = g.alvoSaidas || (g.nome==='G7'?7:g.nome==='G8'?8:g.nome==='G9'?9:g.nome==='G10'?10:11);
+tr.innerHTML=`<td><b>${g.nome}</b></td><td>${g.janela}</td><td>${alvo}</td><td><b>${g.saidasContadas}</b></td><td><span class='badge ${g.atingido?'ativo':'normal'}'>${g.atingido?'🔥 ATIVO':'Aguardando'}</span></td>`;
+",
 "tbody.appendChild(tr);",
 "});",
 "}catch(e){}",
