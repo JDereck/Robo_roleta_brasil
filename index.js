@@ -40,7 +40,7 @@ const estadoMesas = {
         historico: [],
         contador: 0,
         carregado: false,
-        statusConexao: "🟢 Iniciando rastreador HTML...",
+        statusConexao: "🟢 Iniciando coletor multi-rotas...",
         radar: []
     }
 };
@@ -62,6 +62,16 @@ async function enviarTelegram(texto) {
 }
 
 // =====================================================
+// SINCRONIZAÇÃO GOOGLE SHEETS
+// =====================================================
+async function sincronizarPlanilha(type, tableId, payload) {
+    if (!GAS_WEBHOOK_URL) return;
+    try {
+        await axios.post(GAS_WEBHOOK_URL, { type, tableId, ...payload }, { timeout: 10000 });
+    } catch (e) {}
+}
+
+// =====================================================
 // MOTOR ESTATÍSTICO & GATILHOS
 // =====================================================
 function avaliarGatilhosSetor(girosRecentes) {
@@ -70,7 +80,10 @@ function avaliarGatilhosSetor(girosRecentes) {
 
     config.gatilhos.forEach(g => {
         if (girosRecentes.length < g.janela) {
-            resultadosGatilhos.push({ nome: g.nome, janela: g.janela, atingido: false, girosGastos: 0, saidasContadas: 0, alvoSaidas: g.alvoSaidas });
+            resultadosGatilhos.push({
+                nome: g.nome, janela: g.janela, atingido: false,
+                girosGastos: 0, saidasContadas: 0, alvoSaidas: g.alvoSaidas
+            });
             return;
         }
 
@@ -128,13 +141,13 @@ function extrairNumeros(entrada) {
     return entrada.split(/[\s,;]+/).map(x => x.trim()).filter(x => /^(0|[1-9]|[12][0-9]|3[0-6])$/.test(x)).map(Number);
 }
 
-function processarNovosGiros(idMesa, numerosArray) {
+function processarNovosGiros(idMesa, numerosArray, origemNome = "auto_cloud") {
     const mesa = estadoMesas[idMesa];
     if (!mesa) return;
 
     const agora = new Date().toISOString();
 
-    if (!mesa.carregado || numerosArray.length >= 25) {
+    if (!mesa.carregado || numerosArray.length >= 20) {
         const base = numerosArray.slice(0, config.limiteHistorico);
         mesa.historico = [];
         mesa.contador = 0;
@@ -144,12 +157,13 @@ function processarNovosGiros(idMesa, numerosArray) {
             const gId = idMesa + "_G_" + String(mesa.contador).padStart(6, "0");
             mesa.historico.unshift({
                 tableId: idMesa, gameId: gId, number: num, rawResult: String(num),
-                timestamp: agora, origem: "html_badge"
+                timestamp: agora, origem: origemNome
             });
         }
 
         mesa.carregado = true;
-        mesa.statusConexao = "🟢 HTML Conectado (" + mesa.historico.length + " giros | Últ: " + mesa.historico[0].number + ")";
+        mesa.statusConexao = `🟢 Conectado via ${origemNome} (${mesa.historico.length} giros | Últ: ${mesa.historico[0].number})`;
+        sincronizarPlanilha("SYNC_BATCH", idMesa, { spins: mesa.historico });
         calcularRadarMesa(idMesa);
         return;
     }
@@ -161,72 +175,184 @@ function processarNovosGiros(idMesa, numerosArray) {
         const gId = idMesa + "_G_" + String(mesa.contador).padStart(6, "0");
         const giro = {
             tableId: idMesa, gameId: gId, number: num, rawResult: String(num),
-            timestamp: agora, origem: "html_badge"
+            timestamp: agora, origem: origemNome
         };
         mesa.historico.unshift(giro);
         inseridos.push(giro);
+        sincronizarPlanilha("NEW_SPIN", idMesa, { spin: giro });
         calcularRadarMesa(idMesa, num);
     }
 
     mesa.historico = mesa.historico.slice(0, config.limiteHistorico);
     if (inseridos.length > 0) {
-        mesa.statusConexao = "🟢 HTML Sincronizado (" + mesa.historico.length + " giros | Últ: " + mesa.historico[0].number + ")";
+        mesa.statusConexao = `🟢 Ao Vivo via ${origemNome} (${mesa.historico.length} giros | Últ: ${mesa.historico[0].number})`;
     }
 }
 
 // =====================================================
-// COLETOR AUTOMÁTICO - RASTREADOR DO "DATA-SLOT BADGE"
+// EXTRATORES INTELIGENTES (JSON + NEXT.JS + HTML BADGES)
+// =====================================================
+function extrairDeJSON(rawData) {
+    if (!rawData) return [];
+    let dataObj = rawData;
+    if (typeof rawData === "string") {
+        try { dataObj = JSON.parse(rawData); } catch (e) { return []; }
+    }
+    if (dataObj && dataObj.contents && typeof dataObj.contents === "string") {
+        try { dataObj = JSON.parse(dataObj.contents); } catch (e) {}
+    }
+
+    let lista = [];
+    if (Array.isArray(dataObj)) lista = dataObj;
+    else if (dataObj && Array.isArray(dataObj.content)) lista = dataObj.content;
+    else if (dataObj && Array.isArray(dataObj.data)) lista = dataObj.data;
+    else if (dataObj && Array.isArray(dataObj.results)) lista = dataObj.results;
+
+    const numeros = [];
+    for (const item of lista) {
+        let val = undefined;
+        if (item && item.data && item.data.result !== undefined) val = item.data.result;
+        else if (item && item.data && item.data.outcome && item.data.outcome.number !== undefined) val = item.data.outcome.number;
+        else if (item && item.result !== undefined) val = item.result;
+        else if (item && item.number !== undefined) val = item.number;
+        else if (item && item.winningNumber !== undefined) val = item.winningNumber;
+
+        const n = Number(val);
+        if (Number.isInteger(n) && n >= 0 && n <= 36) {
+            numeros.push(n);
+        }
+    }
+    return numeros;
+}
+
+function extrairDeHTML(htmlString) {
+    if (!htmlString || typeof htmlString !== "string") return [];
+    const $ = cheerio.load(htmlString);
+    const numeros = [];
+
+    // 1. Procura nos spans com data-slot="badge" (os 2 locais que você identificou)
+    $('span[data-slot="badge"]').each((i, el) => {
+        const texto = $(el).text().trim();
+        if (/^(0|[1-9]|[12][0-9]|3[0-6])$/.test(texto)) {
+            numeros.push(Number(texto));
+        }
+    });
+
+    // 2. Se o Next.js embutiu os giros em script JSON na página, extrai via Regex
+    if (numeros.length === 0) {
+        const regexResult = /"result"\s*:\s*"?(\d{1,2})"?/g;
+        let match;
+        while ((match = regexResult.exec(htmlString)) !== null) {
+            const n = Number(match[1]);
+            if (n >= 0 && n <= 36) numeros.push(n);
+        }
+    }
+
+    // Remove duplicados seguidos gerados pelos 2 badges do mesmo giro no layout
+    return numeros.filter((num, idx, arr) => idx === 0 || num !== arr[idx - 1]);
+}
+
+// =====================================================
+// COLETOR AUTOMÁTICO MULTI-ROTAS (ANTI-CLOUDFLARE)
 // =====================================================
 let ultimaAssinaturaColetor = "";
+let emExecucao = false;
 
 async function coletarResultadosAutomaticamente() {
+    if (emExecucao) return;
+    emExecucao = true;
+
     const mesa = estadoMesas["237"];
-    try {
-        const urlAlvo = "https://www.casino.org/casinoscores/pt-br/lightning-roulette/";
-        
-        const response = await axios.get(urlAlvo, {
-            headers: { 
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
-            },
-            timeout: 12000
-        });
+    const timestamp = Date.now();
+    const apiTarget = `https://api-cs.casino.org/svc-evolution-game-events/api/lightningroulette?page=0&size=40&sort=data.settledAt,desc&_t=${timestamp}`;
+    const webTarget = `https://www.casino.org/casinoscores/pt-br/lightning-roulette/`;
 
-        // Carrega o HTML da página
-        const $ = cheerio.load(response.data);
-        const numerosEncontrados = [];
-
-        // CAÇA EXATAMENTE A ETIQUETA QUE VOCÊ MANDOU
-        $('span[data-slot="badge"]').each((i, el) => {
-            const texto = $(el).text().trim();
-            if (/^(0|[1-9]|[12][0-9]|3[0-6])$/.test(texto)) {
-                numerosEncontrados.push(Number(texto));
+    // 4 Rotas em Cascata (Direta + 3 Proxies Gratuitos para furar bloqueio de IP do Render)
+    const rotas = [
+        {
+            nome: "API_Direta",
+            tipo: "json",
+            url: apiTarget,
+            headers: {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "Accept": "application/json",
+                "Origin": "https://www.casino.org",
+                "Referer": "https://www.casino.org/"
             }
-        });
+        },
+        {
+            nome: "Proxy_AllOrigins",
+            tipo: "json",
+            url: `https://api.allorigins.win/raw?url=${encodeURIComponent(apiTarget)}`,
+            headers: { "User-Agent": "Mozilla/5.0" }
+        },
+        {
+            nome: "Proxy_CodeTabs",
+            tipo: "json",
+            url: `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(apiTarget)}`,
+            headers: { "User-Agent": "Mozilla/5.0" }
+        },
+        {
+            nome: "HTML_Proxy",
+            tipo: "html",
+            url: `https://api.allorigins.win/raw?url=${encodeURIComponent(webTarget)}`,
+            headers: { "User-Agent": "Mozilla/5.0" }
+        }
+    ];
 
-        // O site pode ter números repetidos seguidos, então pegamos uma sequência limpa
-        const recentes = numerosEncontrados.slice(0, 30);
-        
-        if (recentes.length === 0) {
-            mesa.statusConexao = "🟡 HTML carregou, mas badges não encontrados.";
+    let recentes = [];
+    let rotaVencedora = "";
+    let ultimoErro = "";
+
+    for (const rota of rotas) {
+        try {
+            const response = await axios.get(rota.url, {
+                headers: rota.headers,
+                timeout: 10000
+            });
+
+            if (rota.tipo === "json") {
+                recentes = extrairDeJSON(response.data);
+            } else {
+                recentes = extrairDeHTML(response.data);
+            }
+
+            if (recentes && recentes.length > 0) {
+                rotaVencedora = rota.nome;
+                break; // Achou os números! Para de testar as outras rotas
+            }
+        } catch (err) {
+            ultimoErro = `${rota.nome}: ${err.response ? err.response.status : err.message}`;
+        }
+    }
+
+    try {
+        if (!recentes || recentes.length === 0) {
+            mesa.statusConexao = `🟡 Tentando reconectar... (${ultimoErro || "Sem dados nas rotas"})`;
+            emExecucao = false;
             return;
         }
 
-        const assinaturaAtual = recentes.join(",");
-        if (assinaturaAtual === ultimaAssinaturaColetor) return; 
+        const lote = recentes.slice(0, 35);
+        const assinaturaAtual = lote.join(",");
+
+        if (assinaturaAtual === ultimaAssinaturaColetor) {
+            emExecucao = false;
+            return; // Nenhum giro novo desde a última leitura
+        }
 
         if (!mesa.carregado || mesa.historico.length === 0) {
-            processarNovosGiros("237", recentes);
+            processarNovosGiros("237", lote, rotaVencedora);
             ultimaAssinaturaColetor = assinaturaAtual;
+            emExecucao = false;
             return;
         }
 
-        let novosGiros = [];
+        // Sincronização inteligente: descobre quantos giros novos entraram
         let offset = -1;
-
-        for (let i = 0; i < recentes.length; i++) {
-            if (recentes[i] === mesa.historico[0].number) {
-                if (recentes[i+1] === mesa.historico[1]?.number) {
+        for (let i = 0; i < lote.length; i++) {
+            if (lote[i] === mesa.historico[0].number) {
+                if (mesa.historico.length === 1 || lote[i + 1] === mesa.historico[1]?.number) {
                     offset = i;
                     break;
                 }
@@ -234,21 +360,24 @@ async function coletarResultadosAutomaticamente() {
         }
 
         if (offset > 0) {
-            novosGiros = recentes.slice(0, offset);
-            processarNovosGiros("237", novosGiros);
-        } else if (offset === -1 && recentes[0] !== mesa.historico[0].number) {
+            const novosGiros = lote.slice(0, offset);
+            processarNovosGiros("237", novosGiros, rotaVencedora);
+        } else if (offset === -1 && lote[0] !== mesa.historico[0].number) {
             mesa.carregado = false;
-            processarNovosGiros("237", recentes);
+            processarNovosGiros("237", lote, rotaVencedora);
         }
 
         ultimaAssinaturaColetor = assinaturaAtual;
-
     } catch (e) {
-        if (mesa) mesa.statusConexao = `🔴 Erro HTML: ${e.message}`;
+        mesa.statusConexao = `🔴 Erro interno: ${e.message}`;
     }
+
+    emExecucao = false;
 }
 
-setInterval(coletarResultadosAutomaticamente, 10000);
+// Dispara imediatamente ao ligar o servidor e repete a cada 8 segundos
+coletarResultadosAutomaticamente();
+setInterval(coletarResultadosAutomaticamente, 8000);
 
 // =====================================================
 // ROTAS API E PAINEL
@@ -266,7 +395,7 @@ app.post("/api/spins", (req, res) => {
         const idMesa = String(req.body.tableId || "237").trim();
         const numeros = extrairNumeros(req.body.numbers || req.body.text || req.body.html);
         if (!numeros.length) return res.status(400).json({ status: "error", message: "Nenhum número válido." });
-        processarNovosGiros(idMesa, numeros);
+        processarNovosGiros(idMesa, numeros, "manual");
         return res.json({ status: "success" });
     } catch (err) {
         return res.status(400).json({ status: "error", message: err.message });
