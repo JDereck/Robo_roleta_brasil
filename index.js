@@ -11,11 +11,6 @@ const GAS_WEBHOOK_URL = process.env.GAS_WEBHOOK_URL || "https://script.google.co
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN || "9091680827:AAER8mF6-T5gJ8iL5VGK4EbCFCH4QY7lazc";
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || "824181525";
 
-const CILINDRO = [
-0, 32, 15, 19, 4, 21, 2, 25, 17, 34, 6, 27, 13, 36, 11, 30, 8, 23, 10,
-5, 24, 16, 33, 1, 20, 14, 31, 9, 22, 18, 29, 7, 28, 12, 35, 3, 26
-];
-
 // O SETOR ALVO DEFINITIVO DO PROJETO EQUILIBRIUM (6 números)
 const SETOR_EQUILIBRIUM = [0, 32, 15, 19, 4, 21];
 
@@ -74,7 +69,6 @@ let resultadosGatilhos = [];
 let gatilhoAtivoGeral = false;
 
 config.gatilhos.forEach(g => {
-// Se o histórico for menor que a janela do gatilho, ignora
 if (girosRecentes.length < g.janela) {
     resultadosGatilhos.push({ nome: g.nome, janela: g.janela, atingido: false, girosGastos: 0, saidasContadas: 0 });
     return;
@@ -88,7 +82,6 @@ for (let i = 0; i < girosRecentes.length; i++) {
         contSaidas++;
     }
     jogadasJanela++;
-    // Se atingiu o alvo de saídas dentro da janela exata ou histórico analisado
     if (contSaidas === g.alvoSaidas) {
         break;
     }
@@ -260,7 +253,7 @@ res.json({ status: "success", config });
 });
 
 // =====================================================
-// PAINEL VIP EQUILIBRIUM
+// PAINEL VIP EQUILIBRIUM (ROTA PRINCIPAL /)
 // =====================================================
 
 app.get("/", (req, res) => {
@@ -292,7 +285,7 @@ const html = [
 "<div style='font-size:13px;color:var(--green);margin-top:10px;font-weight:bold' id='lblConexoes'>Aguardando dados...</div>",
 "</div>",
 "<div class='card'>",
-"<b style='color:var(--gold)'>📥 Inserir Giros Manuais</b>",
+"<b style='color:var(--gold)'>📥 Inserir Giros Manuais (Teste)</b>",
 "<textarea id='txtManual' rows='2' placeholder='Ex: 0, 32, 15, 19, 4, 21'></textarea>",
 "<button onclick='enviarManual()'>ENVIAR GIROS</button>",
 "</div>",
