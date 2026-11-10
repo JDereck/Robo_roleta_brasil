@@ -153,20 +153,17 @@ function extrairNumeros(entrada) {
         .map(Number);
 }
 
-// Os números entram no formato [Mais_Recente, ..., Mais_Antigo]
 function processarNovosGiros(idMesa, numerosArray) {
     const mesa = estadoMesas[idMesa];
     if (!mesa) return;
 
     const agora = new Date().toISOString();
 
-    // Primeira Carga (Preenche o Histórico Completo)
     if (!mesa.carregado || numerosArray.length >= 25) {
         const base = numerosArray.slice(0, config.limiteHistorico);
         mesa.historico = [];
         mesa.contador = 0;
 
-        // Inverte para gravar do mais antigo para o mais novo, mantendo o índice 0 como o giro atual
         for (const num of base.slice().reverse()) {
             mesa.contador++;
             const gId = idMesa + "_G_" + String(mesa.contador).padStart(6, "0");
@@ -187,9 +184,7 @@ function processarNovosGiros(idMesa, numerosArray) {
         return { modo: "CARGA_COMPLETA", total: mesa.historico.length };
     }
 
-    // Carga Contínua (Giros Ao Vivo)
     const inseridos = [];
-    // Inverte a ordem para inserir o mais antigo primeiro, terminando no mais recente no topo do array
     for (const num of numerosArray.slice().reverse()) {
         if (!Number.isInteger(num) || num < 0 || num > 36) continue;
         mesa.contador++;
@@ -216,49 +211,54 @@ function processarNovosGiros(idMesa, numerosArray) {
 }
 
 // =====================================================
-// COLETOR AUTOMÁTICO - API DIRETA (JSON) SEM BLOQUEIOS
+// COLETOR AUTOMÁTICO - API DIRETA (JSON)
 // =====================================================
 let ultimaAssinaturaColetor = "";
 
 async function coletarResultadosAutomaticamente() {
+    const mesa = estadoMesas["237"];
     try {
-        const mesa = estadoMesas["237"];
         const urlAPI = "https://api-cs.casino.org/svc-evolution-game-events/api/lightningroulette?page=0&size=30&sort=data.settledAt,desc";
         
+        // Cabeçalhos aprimorados para tentar contornar bloqueios de Cloudflare
         const response = await axios.get(urlAPI, {
             headers: { 
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Accept": "application/json",
+                "Accept": "application/json, text/plain, */*",
+                "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+                "Accept-Encoding": "gzip, deflate, br",
                 "Origin": "https://www.casino.org",
-                "Referer": "https://www.casino.org/"
+                "Referer": "https://www.casino.org/",
+                "Connection": "keep-alive",
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "same-site"
             },
             timeout: 10000
         });
 
         if (response.data && response.data.content && Array.isArray(response.data.content)) {
-            // Extrai a lista limpa vinda da API (do mais novo para o mais antigo)
             const numerosRecentes = response.data.content
                 .filter(item => item && item.data && item.data.result !== undefined)
                 .map(item => Number(item.data.result));
             
-            if (numerosRecentes.length === 0) return;
+            if (numerosRecentes.length === 0) {
+                mesa.statusConexao = "🟡 API conectou, mas não retornou números.";
+                return;
+            }
 
             const assinaturaAtual = numerosRecentes.join(",");
             if (assinaturaAtual === ultimaAssinaturaColetor) return; // Nenhuma novidade
 
-            // Se for a primeira vez, envia tudo
             if (!mesa.carregado || mesa.historico.length === 0) {
                 processarNovosGiros("237", numerosRecentes);
                 ultimaAssinaturaColetor = assinaturaAtual;
-                console.log("🔄 [API INICIAL] Histórico carregado:", numerosRecentes.slice(0, 5));
                 return;
             }
 
-            // Descobre quais são os giros novos comparando com a memória
             let novosGiros = [];
             let offset = -1;
 
-            // Procura a sobreposição verificando 3 números em sequência para evitar falhas com números repetidos (ex: duplo 4)
             for (let i = 0; i < numerosRecentes.length; i++) {
                 if (numerosRecentes[i] === mesa.historico[0].number) {
                     if (numerosRecentes[i+1] === mesa.historico[1]?.number && 
@@ -270,25 +270,29 @@ async function coletarResultadosAutomaticamente() {
             }
 
             if (offset > 0) {
-                // Pega apenas os números que estão antes da sobreposição (os verdadeiros novos)
                 novosGiros = numerosRecentes.slice(0, offset);
                 processarNovosGiros("237", novosGiros);
-                console.log("🔥 [API AO VIVO] Novos giros capturados:", novosGiros);
             } else if (offset === -1 && numerosRecentes[0] !== mesa.historico[0].number) {
-                // Perdeu a sincronia (servidor ficou offline um tempo), recarrega tudo
                 mesa.carregado = false;
                 processarNovosGiros("237", numerosRecentes);
-                console.log("🔄 [API SYNC] Sincronia perdida, recarregando histórico completo.");
             }
 
             ultimaAssinaturaColetor = assinaturaAtual;
+        } else {
+            mesa.statusConexao = "🔴 Erro API: Formato de dados desconhecido.";
         }
     } catch (e) {
-        console.error("⚠️ [COLETOR API] Erro de conexão com a fonte:", e.message);
+        console.error("⚠️ [COLETOR API] Erro:", e.message);
+        if (mesa) {
+            let msgErro = e.message;
+            if (e.response && e.response.status) {
+                msgErro = `Bloqueio ${e.response.status} (Cloudflare/Segurança)`;
+            }
+            mesa.statusConexao = `🔴 Falha na Nuvem: ${msgErro}`;
+        }
     }
 }
 
-// Roda o coletor automático a cada 8 segundos na nuvem do Render
 setInterval(coletarResultadosAutomaticamente, 8000);
 
 // =====================================================
