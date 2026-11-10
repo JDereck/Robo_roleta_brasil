@@ -1,5 +1,6 @@
 const express = require("express");
 const axios = require("axios");
+const cheerio = require("cheerio");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -16,13 +17,13 @@ const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || "824181525";
 const SETOR_EQUILIBRIUM = [0, 32, 15, 19, 4, 21];
 
 const CATALOGO_MESAS = {
-    "237": { id: "237", nome: "⚡ Lightning Roulette (API)", ativa: true }
+    "237": { id: "237", nome: "⚡ Lightning Roulette", ativa: true }
 };
 
-// CONFIGURAÇÃO DOS 5 GATILHOS OFICIAIS DA FASE 2A
+// CONFIGURAÇÃO DOS 5 GATILHOS
 const config = {
     statusRobo: "ATIVO",
-    limiteHistorico: 500, // Armazena até 500 giros na memória
+    limiteHistorico: 500,
     gatilhos: [
         { nome: "G7",  janela: 40, alvoSaidas: 7 },
         { nome: "G8",  janela: 44, alvoSaidas: 8 },
@@ -39,7 +40,7 @@ const estadoMesas = {
         historico: [],
         contador: 0,
         carregado: false,
-        statusConexao: "🟢 Iniciando conexão com a API...",
+        statusConexao: "🟢 Iniciando rastreador HTML...",
         radar: []
     }
 };
@@ -47,7 +48,6 @@ const estadoMesas = {
 // =====================================================
 // TELEGRAM COMUNICADOR
 // =====================================================
-
 async function enviarTelegram(texto) {
     if (!TELEGRAM_TOKEN || !TELEGRAM_CHAT_ID) return;
     try {
@@ -62,9 +62,8 @@ async function enviarTelegram(texto) {
 }
 
 // =====================================================
-// MOTOR ESTATÍSTICO & GATILHOS (G7 a G11)
+// MOTOR ESTATÍSTICO & GATILHOS
 // =====================================================
-
 function avaliarGatilhosSetor(girosRecentes) {
     let resultadosGatilhos = [];
     let gatilhoAtivoGeral = false;
@@ -79,25 +78,17 @@ function avaliarGatilhosSetor(girosRecentes) {
         let jogadasJanela = 0;
 
         for (let i = 0; i < girosRecentes.length; i++) {
-            if (SETOR_EQUILIBRIUM.includes(girosRecentes[i])) {
-                contSaidas++;
-            }
+            if (SETOR_EQUILIBRIUM.includes(girosRecentes[i])) contSaidas++;
             jogadasJanela++;
-            if (contSaidas === g.alvoSaidas) {
-                break;
-            }
+            if (contSaidas === g.alvoSaidas) break;
         }
 
         let atingido = (contSaidas >= g.alvoSaidas && jogadasJanela <= g.janela);
         if (atingido) gatilhoAtivoGeral = true;
 
         resultadosGatilhos.push({
-            nome: g.nome,
-            janela: g.janela,
-            alvoSaidas: g.alvoSaidas,
-            girosGastos: jogadasJanela,
-            saidasContadas: contSaidas,
-            atingido: atingido
+            nome: g.nome, janela: g.janela, alvoSaidas: g.alvoSaidas,
+            girosGastos: jogadasJanela, saidasContadas: contSaidas, atingido: atingido
         });
     });
 
@@ -127,30 +118,14 @@ function calcularRadarMesa(idMesa, ultimoNumeroSorteado) {
 }
 
 // =====================================================
-// SINCRONIZAÇÃO GOOGLE SHEETS
-// =====================================================
-
-async function sincronizarPlanilha(type, tableId, payload) {
-    if (!GAS_WEBHOOK_URL) return;
-    try {
-        await axios.post(GAS_WEBHOOK_URL, { type, tableId, ...payload }, { timeout: 10000 });
-    } catch (e) {}
-}
-
-// =====================================================
 // PROCESSAMENTO DE ENTRADAS (SPINS)
 // =====================================================
-
 function extrairNumeros(entrada) {
     if (Array.isArray(entrada)) {
         return entrada.map(x => Number(String(x).trim())).filter(n => Number.isInteger(n) && n >= 0 && n <= 36);
     }
     if (!entrada || typeof entrada !== "string") return [];
-    return entrada
-        .split(/[\s,;]+/)
-        .map(x => x.trim())
-        .filter(x => /^(0|[1-9]|[12][0-9]|3[0-6])$/.test(x))
-        .map(Number);
+    return entrada.split(/[\s,;]+/).map(x => x.trim()).filter(x => /^(0|[1-9]|[12][0-9]|3[0-6])$/.test(x)).map(Number);
 }
 
 function processarNovosGiros(idMesa, numerosArray) {
@@ -168,20 +143,15 @@ function processarNovosGiros(idMesa, numerosArray) {
             mesa.contador++;
             const gId = idMesa + "_G_" + String(mesa.contador).padStart(6, "0");
             mesa.historico.unshift({
-                tableId: idMesa,
-                gameId: gId,
-                number: num,
-                rawResult: String(num),
-                timestamp: agora,
-                origem: "api_direta"
+                tableId: idMesa, gameId: gId, number: num, rawResult: String(num),
+                timestamp: agora, origem: "html_badge"
             });
         }
 
         mesa.carregado = true;
-        mesa.statusConexao = "🟢 API Conectada (" + mesa.historico.length + " giros | Últ: " + mesa.historico[0].number + ")";
-        sincronizarPlanilha("SYNC_BATCH", idMesa, { spins: mesa.historico });
+        mesa.statusConexao = "🟢 HTML Conectado (" + mesa.historico.length + " giros | Últ: " + mesa.historico[0].number + ")";
         calcularRadarMesa(idMesa);
-        return { modo: "CARGA_COMPLETA", total: mesa.historico.length };
+        return;
     }
 
     const inseridos = [];
@@ -190,117 +160,99 @@ function processarNovosGiros(idMesa, numerosArray) {
         mesa.contador++;
         const gId = idMesa + "_G_" + String(mesa.contador).padStart(6, "0");
         const giro = {
-            tableId: idMesa,
-            gameId: gId,
-            number: num,
-            rawResult: String(num),
-            timestamp: agora,
-            origem: "api_direta"
+            tableId: idMesa, gameId: gId, number: num, rawResult: String(num),
+            timestamp: agora, origem: "html_badge"
         };
         mesa.historico.unshift(giro);
         inseridos.push(giro);
-        sincronizarPlanilha("NEW_SPIN", idMesa, { spin: giro });
         calcularRadarMesa(idMesa, num);
     }
 
     mesa.historico = mesa.historico.slice(0, config.limiteHistorico);
     if (inseridos.length > 0) {
-        mesa.statusConexao = "🟢 API Sincronizada (" + mesa.historico.length + " giros | Últ: " + mesa.historico[0].number + ")";
+        mesa.statusConexao = "🟢 HTML Sincronizado (" + mesa.historico.length + " giros | Últ: " + mesa.historico[0].number + ")";
     }
-    return { modo: "AO_VIVO", inseridos: inseridos.length };
 }
 
 // =====================================================
-// COLETOR AUTOMÁTICO - API DIRETA COM RAIO-X
+// COLETOR AUTOMÁTICO - RASTREADOR DO "DATA-SLOT BADGE"
 // =====================================================
 let ultimaAssinaturaColetor = "";
 
 async function coletarResultadosAutomaticamente() {
     const mesa = estadoMesas["237"];
     try {
-        const urlAPI = "https://api-cs.casino.org/svc-evolution-game-events/api/lightningroulette?page=0&size=30&sort=data.settledAt,desc";
+        const urlAlvo = "https://www.casino.org/casinoscores/pt-br/lightning-roulette/";
         
-        const response = await axios.get(urlAPI, {
+        const response = await axios.get(urlAlvo, {
             headers: { 
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-                "Accept": "application/json",
-                "Origin": "https://www.casino.org",
-                "Referer": "https://www.casino.org/"
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
             },
-            timeout: 10000
+            timeout: 12000
         });
 
-        const rawData = response.data;
-        
-        // 1. Tenta encontrar a lista de resultados dinamicamente
-        let lista = [];
-        if (Array.isArray(rawData)) lista = rawData;
-        else if (rawData.content && Array.isArray(rawData.content)) lista = rawData.content;
-        else if (rawData.data && Array.isArray(rawData.data)) lista = rawData.data;
-        else if (rawData.items && Array.isArray(rawData.items)) lista = rawData.items;
+        // Carrega o HTML da página
+        const $ = cheerio.load(response.data);
+        const numerosEncontrados = [];
 
-        if (lista.length > 0) {
-            // 2. Tenta extrair o número de vários formatos conhecidos
-            const numerosRecentes = lista.map(item => {
-                if (item && item.data && item.data.result !== undefined) return Number(item.data.result);
-                if (item && item.result !== undefined) return Number(item.result);
-                if (item && item.number !== undefined) return Number(item.number);
-                if (item && item.winningNumber !== undefined) return Number(item.winningNumber);
-                return null;
-            }).filter(n => n !== null && !isNaN(n));
-
-            if (numerosRecentes.length > 0) {
-                const assinaturaAtual = numerosRecentes.join(",");
-                if (assinaturaAtual === ultimaAssinaturaColetor) return;
-
-                if (!mesa.carregado || mesa.historico.length === 0) {
-                    processarNovosGiros("237", numerosRecentes);
-                    ultimaAssinaturaColetor = assinaturaAtual;
-                    return;
-                }
-
-                let novosGiros = [];
-                let offset = -1;
-
-                for (let i = 0; i < numerosRecentes.length; i++) {
-                    if (numerosRecentes[i] === mesa.historico[0].number) {
-                        if (numerosRecentes[i+1] === mesa.historico[1]?.number && 
-                            numerosRecentes[i+2] === mesa.historico[2]?.number) {
-                            offset = i;
-                            break;
-                        }
-                    }
-                }
-
-                if (offset > 0) {
-                    novosGiros = numerosRecentes.slice(0, offset);
-                    processarNovosGiros("237", novosGiros);
-                } else if (offset === -1 && numerosRecentes[0] !== mesa.historico[0].number) {
-                    mesa.carregado = false;
-                    processarNovosGiros("237", numerosRecentes);
-                }
-
-                ultimaAssinaturaColetor = assinaturaAtual;
-            } else {
-                // Se achou a lista mas não achou os números, imprime uma amostra para eu ver!
-                mesa.statusConexao = "🔴 Raio-X (Item): " + JSON.stringify(lista[0]).substring(0, 100);
+        // CAÇA EXATAMENTE A ETIQUETA QUE VOCÊ MANDOU
+        $('span[data-slot="badge"]').each((i, el) => {
+            const texto = $(el).text().trim();
+            if (/^(0|[1-9]|[12][0-9]|3[0-6])$/.test(texto)) {
+                numerosEncontrados.push(Number(texto));
             }
-        } else {
-            // Se nem achou a lista, imprime a estrutura geral para eu ver!
-            mesa.statusConexao = "🔴 Raio-X (Estrutura): " + Object.keys(rawData).join(", ") + " | " + JSON.stringify(rawData).substring(0, 80);
+        });
+
+        // O site pode ter números repetidos seguidos, então pegamos uma sequência limpa
+        const recentes = numerosEncontrados.slice(0, 30);
+        
+        if (recentes.length === 0) {
+            mesa.statusConexao = "🟡 HTML carregou, mas badges não encontrados.";
+            return;
         }
+
+        const assinaturaAtual = recentes.join(",");
+        if (assinaturaAtual === ultimaAssinaturaColetor) return; 
+
+        if (!mesa.carregado || mesa.historico.length === 0) {
+            processarNovosGiros("237", recentes);
+            ultimaAssinaturaColetor = assinaturaAtual;
+            return;
+        }
+
+        let novosGiros = [];
+        let offset = -1;
+
+        for (let i = 0; i < recentes.length; i++) {
+            if (recentes[i] === mesa.historico[0].number) {
+                if (recentes[i+1] === mesa.historico[1]?.number) {
+                    offset = i;
+                    break;
+                }
+            }
+        }
+
+        if (offset > 0) {
+            novosGiros = recentes.slice(0, offset);
+            processarNovosGiros("237", novosGiros);
+        } else if (offset === -1 && recentes[0] !== mesa.historico[0].number) {
+            mesa.carregado = false;
+            processarNovosGiros("237", recentes);
+        }
+
+        ultimaAssinaturaColetor = assinaturaAtual;
+
     } catch (e) {
-        if (mesa) mesa.statusConexao = `🔴 Falha na Nuvem: ${e.response ? e.response.status : e.message}`;
+        if (mesa) mesa.statusConexao = `🔴 Erro HTML: ${e.message}`;
     }
 }
 
-setInterval(coletarResultadosAutomaticamente, 8000);
-
+setInterval(coletarResultadosAutomaticamente, 10000);
 
 // =====================================================
 // ROTAS API E PAINEL
 // =====================================================
-
 app.use((req, res, next) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
@@ -314,9 +266,8 @@ app.post("/api/spins", (req, res) => {
         const idMesa = String(req.body.tableId || "237").trim();
         const numeros = extrairNumeros(req.body.numbers || req.body.text || req.body.html);
         if (!numeros.length) return res.status(400).json({ status: "error", message: "Nenhum número válido." });
-
-        const resultado = processarNovosGiros(idMesa, numeros);
-        return res.json({ status: "success", resultado });
+        processarNovosGiros(idMesa, numeros);
+        return res.json({ status: "success" });
     } catch (err) {
         return res.status(400).json({ status: "error", message: err.message });
     }
@@ -325,12 +276,7 @@ app.post("/api/spins", (req, res) => {
 app.get("/api/radar-todas", (req, res) => {
     const radar = calcularRadarMesa("237");
     const m = estadoMesas["237"];
-    res.json({
-        status: "success",
-        conexoes: m.statusConexao,
-        config,
-        radar
-    });
+    res.json({ status: "success", conexoes: m.statusConexao, config, radar });
 });
 
 app.post("/api/config", (req, res) => {
@@ -342,10 +288,7 @@ app.post("/api/config", (req, res) => {
 
 app.get("/api/historico", (req, res) => {
     const mesa = estadoMesas["237"];
-    res.json({
-        status: "success",
-        historico: mesa ? mesa.historico.slice(0, 100) : []
-    });
+    res.json({ status: "success", historico: mesa ? mesa.historico.slice(0, 100) : [] });
 });
 
 app.get("/", (req, res) => {
@@ -369,86 +312,46 @@ app.get("/", (req, res) => {
         ".bola-num{display:inline-block;width:28px;height:28px;line-height:28px;border-radius:50%;background:#222;color:#fff;font-weight:bold;text-align:center;border:1px solid #444}",
         "</style></head><body>",
         "<h2>🎯 PROJETO EQUILIBRIUM - PAINEL DE CONTROLE</h2>",
-        
-        "<div class='card'>",
-        "<b style='color:var(--green)'>⚙️ Status do Robô</b>",
+        "<div class='card'><b style='color:var(--green)'>⚙️ Status do Robô</b>",
         "<select id='statusRobo' onchange='salvarConfig()'>",
         "<option value='ATIVO'>ATIVO (Disparando Alertas)</option>",
-        "<option value='PAUSADO'>PAUSADO</option>",
-        "</select>",
-        "<div style='font-size:13px;color:var(--green);margin-top:10px;font-weight:bold' id='lblConexoes'>Aguardando dados...</div>",
-        "</div>",
-        
-        "<div class='card'>",
-        "<b style='color:var(--gold)'>📥 Inserir Giros Manuais (Teste)</b>",
+        "<option value='PAUSADO'>PAUSADO</option></select>",
+        "<div style='font-size:13px;color:var(--green);margin-top:10px;font-weight:bold' id='lblConexoes'>Aguardando dados...</div></div>",
+        "<div class='card'><b style='color:var(--gold)'>📥 Inserir Giros Manuais (Teste)</b>",
         "<textarea id='txtManual' rows='2' placeholder='Ex: 10, 5, 32, 14, 19, 1'></textarea>",
-        "<button onclick='enviarManual()'>ENVIAR GIROS</button>",
-        "</div>",
-        
-        "<div class='card'>",
-        "<b style='font-size:16px'>📊 Monitoramento dos Gatilhos (Setor: 0, 32, 15, 19, 4, 21)</b>",
+        "<button onclick='enviarManual()'>ENVIAR GIROS</button></div>",
+        "<div class='card'><b style='font-size:16px'>📊 Monitoramento dos Gatilhos (Setor: 0, 32, 15, 19, 4, 21)</b>",
         "<div id='statusAlertaGeral' class='badge normal' style='width:100%;text-align:center'>Aguardando histórico...</div>",
         "<table><thead><tr><th>Gatilho</th><th>Janela</th><th>Alvo</th><th>Contadas</th><th>Status</th></tr></thead>",
-        "<tbody id='gatilhosBody'><tr><td colspan='5'>Sem dados...</td></tr></tbody>",
-        "</table></div>",
-        
-        "<div class='card'>",
-        "<b style='font-size:16px'>📜 Últimos Resultados Coletados (Até 100 giros)</b>",
+        "<tbody id='gatilhosBody'><tr><td colspan='5'>Sem dados...</td></tr></tbody></table></div>",
+        "<div class='card'><b style='font-size:16px'>📜 Últimos Resultados Coletados (Até 100 giros)</b>",
         "<div style='max-height: 250px; overflow-y: auto;'>",
         "<table><thead><tr><th>#</th><th>Número</th><th>Origem</th><th>Horário</th></tr></thead>",
-        "<tbody id='historicoBody'><tr><td colspan='4'>Aguardando histórico...</td></tr></tbody>",
-        "</table></div></div>",
-        
+        "<tbody id='historicoBody'><tr><td colspan='4'>Aguardando histórico...</td></tr></tbody></table></div></div>",
         "<script>",
         "async function carregarRadar(){",
-        "try{",
-        "let r=await fetch('/api/radar-todas');",
-        "let j=await r.json();",
+        "try{ let r=await fetch('/api/radar-todas'); let j=await r.json();",
         "document.getElementById('lblConexoes').textContent=j.conexoes;",
         "if(j.config.statusRobo)document.getElementById('statusRobo').value=j.config.statusRobo;",
-        "let radar=j.radar;",
-        "let badgeEl=document.getElementById('statusAlertaGeral');",
-        "badgeEl.textContent=radar.statusAlerta;",
-        "badgeEl.className='badge '+(radar.statusAlerta.includes('ATIVO')?'ativo':'normal');",
-        
-        "let tbody=document.getElementById('gatilhosBody');",
-        "tbody.innerHTML='';",
-        "radar.gatilhos.forEach(g=>{",
-        "let tr=document.createElement('tr');",
+        "let radar=j.radar; let badgeEl=document.getElementById('statusAlertaGeral');",
+        "badgeEl.textContent=radar.statusAlerta; badgeEl.className='badge '+(radar.statusAlerta.includes('ATIVO')?'ativo':'normal');",
+        "let tbody=document.getElementById('gatilhosBody'); tbody.innerHTML='';",
+        "radar.gatilhos.forEach(g=>{ let tr=document.createElement('tr');",
         "let alvo = g.alvoSaidas || (g.nome==='G7'?7:g.nome==='G8'?8:g.nome==='G9'?9:g.nome==='G10'?10:11);",
         "tr.innerHTML=`<td><b>${g.nome}</b></td><td>${g.janela}</td><td>${alvo}</td><td><b>${g.saidasContadas}</b></td><td><span class='badge ${g.atingido?'ativo':'normal'}'>${g.atingido?'🔥 ATIVO':'Aguardando'}</span></td>`;",
-        "tbody.appendChild(tr);",
-        "});",
-        
-        "let hr=await fetch('/api/historico');",
-        "let hj=await hr.json();",
-        "let hbody=document.getElementById('historicoBody');",
-        "hbody.innerHTML='';",
-        "hj.historico.forEach((item, index)=>{",
-        "let tr=document.createElement('tr');",
+        "tbody.appendChild(tr);});",
+        "let hr=await fetch('/api/historico'); let hj=await hr.json();",
+        "let hbody=document.getElementById('historicoBody'); hbody.innerHTML='';",
+        "hj.historico.forEach((item, index)=>{ let tr=document.createElement('tr');",
         "let hora = new Date(item.timestamp).toLocaleTimeString();",
         "tr.innerHTML=`<td>${index+1}</td><td><span class='bola-num'>${item.number}</span></td><td><small>${item.origem}</small></td><td>${hora}</td>`;",
-        "hbody.appendChild(tr);",
-        "});",
-        "}catch(e){}",
-        "}",
-        
-        "async function enviarManual(){",
-        "let txt=document.getElementById('txtManual').value.trim();",
-        "if(!txt)return;",
+        "hbody.appendChild(tr);});}catch(e){}}",
+        "async function enviarManual(){ let txt=document.getElementById('txtManual').value.trim(); if(!txt)return;",
         "await fetch('/api/spins',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tableId:'237',numbers:txt})});",
-        "document.getElementById('txtManual').value='';",
-        "carregarRadar();",
-        "}",
-        
-        "async function salvarConfig(){",
-        "let payload={statusRobo:document.getElementById('statusRobo').value};",
-        "await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});",
-        "carregarRadar();",
-        "}",
-        
-        "carregarRadar();",
-        "setInterval(carregarRadar,3000);",
+        "document.getElementById('txtManual').value=''; carregarRadar();}",
+        "async function salvarConfig(){ let payload={statusRobo:document.getElementById('statusRobo').value};",
+        "await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}); carregarRadar();}",
+        "carregarRadar(); setInterval(carregarRadar,3000);",
         "</script></body></html>"
     ].join("");
     res.send(html);
