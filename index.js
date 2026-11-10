@@ -475,7 +475,7 @@ app.get("/", (req, res) => {
         "async function enviarManual(){ let textVal=document.getElementById('txtManual').value.trim(); if(!textVal)return;",
         "await fetch('/api/spins',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tableId:'237',numbers:textVal})});",
         "document.getElementById('txtManual').value=''; carregarRadar();}",
-        "async function salvarConfig(){ let payload={statusRobo:document.getElementById('statusRobo'].value};",
+        "async function salvarConfig(){ let payload={statusRobo:document.getElementById('statusRobo').value};",
         "await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}); carregarRadar();}",
         "carregarRadar(); setInterval(carregarRadar,3000);",
         "</script></body></html>"
