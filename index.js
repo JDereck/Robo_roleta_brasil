@@ -1,5 +1,6 @@
 const express = require("express");
 const axios = require("axios");
+const cheerio = require("cheerio"); // Usado para ler o HTML da página automaticamente
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -38,7 +39,7 @@ nome: "🇧🇷 Roleta Brasileira",
 historico: [],
 contador: 0,
 carregado: false,
-statusConexao: "🟢 Pronto para receber dados",
+statusConexao: "🟢 Aguardando coleta automática...",
 radar: []
 }
 };
@@ -177,7 +178,7 @@ origem: "web_sync"
 }
 
 mesa.carregado = true;
-mesa.statusConexao = "🟢 Conectado (" + mesa.historico.length + " giros | Últ: " + mesa.historico[0].number + ")";
+mesa.statusConexao = "🟢 Conectado (Automático " + mesa.historico.length + " giros | Últ: " + mesa.historico[0].number + ")";
 sincronizarPlanilha("SYNC_BATCH", idMesa, { spins: mesa.historico });
 calcularRadarMesa(idMesa);
 return { modo: "CARGA_COMPLETA", total: mesa.historico.length };
@@ -204,10 +205,51 @@ calcularRadarMesa(idMesa, num);
 
 mesa.historico = mesa.historico.slice(0, config.limiteHistorico);
 if (inseridos.length > 0) {
-mesa.statusConexao = "🟢 Ao Vivo (" + mesa.historico.length + " giros | Últ: " + mesa.historico[0].number + ")";
+mesa.statusConexao = "🟢 Ao Vivo (Automático " + mesa.historico.length + " giros | Últ: " + mesa.historico[0].number + ")";
 }
 return { modo: "AO_VIVO", inseridos: inseridos.length };
 }
+
+// =====================================================
+// COLETOR AUTOMÁTICO EM SEGUNDO PLANO (BACKGROUND SCRAPER)
+// =====================================================
+let ultimaAssinaturaColetor = "";
+
+async function coletarResultadosAutomaticamente() {
+try {
+const urlAlvo = "https://gamblingcounting.com/pt-BR/lightning-roulette";
+const response = await axios.get(urlAlvo, {
+    headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" },
+    timeout: 10000
+});
+
+const $ = cheerio.load(response.data);
+const numerosEncontrados = [];
+
+// Varre elementos que possam conter os números na página
+$('*').each((i, el) => {
+    const texto = $(el).text().trim();
+    if (/^(0|[1-9]|[12][0-9]|3[0-6])$/.test(texto)) {
+        numerosEncontrados.push(Number(texto));
+    }
+});
+
+const unicos = [...new Set(numerosEncontrados)].slice(0, 30);
+if (unicos.length === 0) return;
+
+const assinaturaAtual = unicos.join(",");
+if (assinaturaAtual !== ultimaAssinaturaColetor) {
+    processarNovosGiros("237", unicos);
+    ultimaAssinaturaColetor = assinaturaAtual;
+    console.log("🔄 [COLETOR AUTOMÁTICO] Novos giros obtidos da nuvem:", unicos.slice(0, 5));
+}
+} catch (e) {
+console.error("⚠️ [COLETOR AUTOMÁTICO] Erro ao buscar dados da página:", e.message);
+}
+}
+
+// Roda o coletor automático a cada 10 segundos na nuvem do Render
+setInterval(coletarResultadosAutomaticamente, 10000);
 
 // =====================================================
 // ROTAS API
@@ -310,9 +352,8 @@ const html = [
 "tbody.innerHTML='';",
 "radar.gatilhos.forEach(g=>{",
 "let tr=document.createElement('tr');",
-"let alvo = g.alvoSaidas || (g.nome==='G7'?7:g.nome==='G8'?8:g.nome==='G9'?9:g.nome==='G10'?10:11);
-tr.innerHTML=`<td><b>${g.nome}</b></td><td>${g.janela}</td><td>${alvo}</td><td><b>${g.saidasContadas}</b></td><td><span class='badge ${g.atingido?'ativo':'normal'}'>${g.atingido?'🔥 ATIVO':'Aguardando'}</span></td>`;
-",
+"let alvo = g.alvoSaidas || (g.nome==='G7'?7:g.nome==='G8'?8:g.nome==='G9'?9:g.nome==='G10'?10:11);",
+"tr.innerHTML=`<td><b>${g.nome}</b></td><td>${g.janela}</td><td>${alvo}</td><td><b>${g.saidasContadas}</b></td><td><span class='badge ${g.atingido?'ativo':'normal'}'>${g.atingido?'🔥 ATIVO':'Aguardando'}</span></td>`;",
 "tbody.appendChild(tr);",
 "});",
 "}catch(e){}",
