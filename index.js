@@ -211,7 +211,7 @@ function processarNovosGiros(idMesa, numerosArray) {
 }
 
 // =====================================================
-// COLETOR AUTOMÁTICO - API DIRETA (JSON)
+// COLETOR AUTOMÁTICO - API DIRETA COM RAIO-X
 // =====================================================
 let ultimaAssinaturaColetor = "";
 
@@ -220,80 +220,82 @@ async function coletarResultadosAutomaticamente() {
     try {
         const urlAPI = "https://api-cs.casino.org/svc-evolution-game-events/api/lightningroulette?page=0&size=30&sort=data.settledAt,desc";
         
-        // Cabeçalhos aprimorados para tentar contornar bloqueios de Cloudflare
         const response = await axios.get(urlAPI, {
             headers: { 
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Accept": "application/json, text/plain, */*",
-                "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
-                "Accept-Encoding": "gzip, deflate, br",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+                "Accept": "application/json",
                 "Origin": "https://www.casino.org",
-                "Referer": "https://www.casino.org/",
-                "Connection": "keep-alive",
-                "Sec-Fetch-Dest": "empty",
-                "Sec-Fetch-Mode": "cors",
-                "Sec-Fetch-Site": "same-site"
+                "Referer": "https://www.casino.org/"
             },
             timeout: 10000
         });
 
-        if (response.data && response.data.content && Array.isArray(response.data.content)) {
-            const numerosRecentes = response.data.content
-                .filter(item => item && item.data && item.data.result !== undefined)
-                .map(item => Number(item.data.result));
-            
-            if (numerosRecentes.length === 0) {
-                mesa.statusConexao = "🟡 API conectou, mas não retornou números.";
-                return;
-            }
+        const rawData = response.data;
+        
+        // 1. Tenta encontrar a lista de resultados dinamicamente
+        let lista = [];
+        if (Array.isArray(rawData)) lista = rawData;
+        else if (rawData.content && Array.isArray(rawData.content)) lista = rawData.content;
+        else if (rawData.data && Array.isArray(rawData.data)) lista = rawData.data;
+        else if (rawData.items && Array.isArray(rawData.items)) lista = rawData.items;
 
-            const assinaturaAtual = numerosRecentes.join(",");
-            if (assinaturaAtual === ultimaAssinaturaColetor) return; // Nenhuma novidade
+        if (lista.length > 0) {
+            // 2. Tenta extrair o número de vários formatos conhecidos
+            const numerosRecentes = lista.map(item => {
+                if (item && item.data && item.data.result !== undefined) return Number(item.data.result);
+                if (item && item.result !== undefined) return Number(item.result);
+                if (item && item.number !== undefined) return Number(item.number);
+                if (item && item.winningNumber !== undefined) return Number(item.winningNumber);
+                return null;
+            }).filter(n => n !== null && !isNaN(n));
 
-            if (!mesa.carregado || mesa.historico.length === 0) {
-                processarNovosGiros("237", numerosRecentes);
-                ultimaAssinaturaColetor = assinaturaAtual;
-                return;
-            }
+            if (numerosRecentes.length > 0) {
+                const assinaturaAtual = numerosRecentes.join(",");
+                if (assinaturaAtual === ultimaAssinaturaColetor) return;
 
-            let novosGiros = [];
-            let offset = -1;
+                if (!mesa.carregado || mesa.historico.length === 0) {
+                    processarNovosGiros("237", numerosRecentes);
+                    ultimaAssinaturaColetor = assinaturaAtual;
+                    return;
+                }
 
-            for (let i = 0; i < numerosRecentes.length; i++) {
-                if (numerosRecentes[i] === mesa.historico[0].number) {
-                    if (numerosRecentes[i+1] === mesa.historico[1]?.number && 
-                        numerosRecentes[i+2] === mesa.historico[2]?.number) {
-                        offset = i;
-                        break;
+                let novosGiros = [];
+                let offset = -1;
+
+                for (let i = 0; i < numerosRecentes.length; i++) {
+                    if (numerosRecentes[i] === mesa.historico[0].number) {
+                        if (numerosRecentes[i+1] === mesa.historico[1]?.number && 
+                            numerosRecentes[i+2] === mesa.historico[2]?.number) {
+                            offset = i;
+                            break;
+                        }
                     }
                 }
-            }
 
-            if (offset > 0) {
-                novosGiros = numerosRecentes.slice(0, offset);
-                processarNovosGiros("237", novosGiros);
-            } else if (offset === -1 && numerosRecentes[0] !== mesa.historico[0].number) {
-                mesa.carregado = false;
-                processarNovosGiros("237", numerosRecentes);
-            }
+                if (offset > 0) {
+                    novosGiros = numerosRecentes.slice(0, offset);
+                    processarNovosGiros("237", novosGiros);
+                } else if (offset === -1 && numerosRecentes[0] !== mesa.historico[0].number) {
+                    mesa.carregado = false;
+                    processarNovosGiros("237", numerosRecentes);
+                }
 
-            ultimaAssinaturaColetor = assinaturaAtual;
+                ultimaAssinaturaColetor = assinaturaAtual;
+            } else {
+                // Se achou a lista mas não achou os números, imprime uma amostra para eu ver!
+                mesa.statusConexao = "🔴 Raio-X (Item): " + JSON.stringify(lista[0]).substring(0, 100);
+            }
         } else {
-            mesa.statusConexao = "🔴 Erro API: Formato de dados desconhecido.";
+            // Se nem achou a lista, imprime a estrutura geral para eu ver!
+            mesa.statusConexao = "🔴 Raio-X (Estrutura): " + Object.keys(rawData).join(", ") + " | " + JSON.stringify(rawData).substring(0, 80);
         }
     } catch (e) {
-        console.error("⚠️ [COLETOR API] Erro:", e.message);
-        if (mesa) {
-            let msgErro = e.message;
-            if (e.response && e.response.status) {
-                msgErro = `Bloqueio ${e.response.status} (Cloudflare/Segurança)`;
-            }
-            mesa.statusConexao = `🔴 Falha na Nuvem: ${msgErro}`;
-        }
+        if (mesa) mesa.statusConexao = `🔴 Falha na Nuvem: ${e.response ? e.response.status : e.message}`;
     }
 }
 
 setInterval(coletarResultadosAutomaticamente, 8000);
+
 
 // =====================================================
 // ROTAS API E PAINEL
