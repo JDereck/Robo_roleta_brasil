@@ -16,7 +16,7 @@ const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || "824181525";
 const SETOR_EQUILIBRIUM = [0, 32, 15, 19, 4, 21];
 
 const CATALOGO_MESAS = {
-    "237": { id: "237", nome: "🇧🇷 Roleta Brasileira", ativa: true }
+    "237": { id: "237", nome: "⚡ Lightning Roulette (Casino.org)", ativa: true }
 };
 
 // CONFIGURAÇÃO DOS 5 GATILHOS OFICIAIS DA FASE 2A
@@ -35,7 +35,7 @@ const config = {
 const estadoMesas = {
     "237": {
         id: "237",
-        nome: "🇧🇷 Roleta Brasileira",
+        nome: "⚡ Lightning Roulette (Casino.org)",
         historico: [],
         contador: 0,
         carregado: false,
@@ -173,12 +173,12 @@ function processarNovosGiros(idMesa, numerosArray) {
                 number: num,
                 rawResult: String(num),
                 timestamp: agora,
-                origem: "web_sync"
+                origem: "casino_org"
             });
         }
 
         mesa.carregado = true;
-        mesa.statusConexao = "🟢 Conectado (Automático " + mesa.historico.length + " giros | Últ: " + mesa.historico[0].number + ")";
+        mesa.statusConexao = "🟢 Conectado (Nuvem: " + mesa.historico.length + " giros | Últ: " + mesa.historico[0].number + ")";
         sincronizarPlanilha("SYNC_BATCH", idMesa, { spins: mesa.historico });
         calcularRadarMesa(idMesa);
         return { modo: "CARGA_COMPLETA", total: mesa.historico.length };
@@ -195,7 +195,7 @@ function processarNovosGiros(idMesa, numerosArray) {
             number: num,
             rawResult: String(num),
             timestamp: agora,
-            origem: "ao_vivo"
+            origem: "casino_org"
         };
         mesa.historico.unshift(giro);
         inseridos.push(giro);
@@ -205,47 +205,58 @@ function processarNovosGiros(idMesa, numerosArray) {
 
     mesa.historico = mesa.historico.slice(0, config.limiteHistorico);
     if (inseridos.length > 0) {
-        mesa.statusConexao = "🟢 Ao Vivo (Automático " + mesa.historico.length + " giros | Últ: " + mesa.historico[0].number + ")";
+        mesa.statusConexao = "🟢 Ao Vivo (Nuvem: " + mesa.historico.length + " giros | Últ: " + mesa.historico[0].number + ")";
     }
     return { modo: "AO_VIVO", inseridos: inseridos.length };
 }
 
 // =====================================================
-// COLETOR AUTOMÁTICO EM SEGUNDO PLANO (BACKGROUND SCRAPER)
+// COLETOR AUTOMÁTICO - CASINO.ORG (SEM TAMPERMONKEY)
 // =====================================================
 let ultimaAssinaturaColetor = "";
 
 async function coletarResultadosAutomaticamente() {
     try {
-        // Alvo de extração
-        const urlAlvo = "https://gamblingcounting.com/pt-BR/lightning-roulette";
+        const urlAlvo = "https://www.casino.org/casinoscores/pt-br/lightning-roulette/";
+        
+        // Cabeçalhos forjados para simular um navegador real e evitar bloqueios
         const response = await axios.get(urlAlvo, {
-            headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" },
-            timeout: 10000
+            headers: { 
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7"
+            },
+            timeout: 15000
         });
 
         const $ = cheerio.load(response.data);
         const numerosEncontrados = [];
 
-        // Varre elementos que possam conter os números na página
+        // Filtro limpo usando o mesmo padrão que você testou no Console
         $('*').each((i, el) => {
-            const texto = $(el).text().trim();
-            if (/^(0|[1-9]|[12][0-9]|3[0-6])$/.test(texto)) {
-                numerosEncontrados.push(Number(texto));
+            if ($(el).children().length === 0) {
+                const texto = $(el).text().trim();
+                if (/^(0|[1-9]|[12][0-9]|3[0-6])$/.test(texto)) {
+                    numerosEncontrados.push(Number(texto));
+                }
             }
         });
 
-        const unicos = [...new Set(numerosEncontrados)].slice(0, 30);
-        if (unicos.length === 0) return;
+        // Remove duplicidades consecutivas geradas pelo layout responsivo do site
+        let sequenciaLimpa = numerosEncontrados.filter((num, index, arr) => index === 0 || num !== arr[index - 1]);
+        
+        // Pega os últimos resultados válidos encontrados
+        const recentes = sequenciaLimpa.slice(0, 30);
+        if (recentes.length === 0) return;
 
-        const assinaturaAtual = unicos.join(",");
+        const assinaturaAtual = recentes.join(",");
         if (assinaturaAtual !== ultimaAssinaturaColetor) {
-            processarNovosGiros("237", unicos);
+            processarNovosGiros("237", recentes);
             ultimaAssinaturaColetor = assinaturaAtual;
-            console.log("🔄 [COLETOR AUTOMÁTICO] Novos giros obtidos da nuvem:", unicos.slice(0, 5));
+            console.log("🔄 [COLETOR CASINO.ORG] Novos giros obtidos da nuvem:", recentes.slice(0, 5));
         }
     } catch (e) {
-        console.error("⚠️ [COLETOR AUTOMÁTICO] Erro ao buscar dados da página:", e.message);
+        console.error("⚠️ [COLETOR CASINO.ORG] Erro ao buscar dados da página:", e.message);
     }
 }
 
@@ -295,7 +306,6 @@ app.post("/api/config", (req, res) => {
     res.json({ status: "success", config });
 });
 
-// NOVA ROTA: Retorna o histórico de giros (últimos 100)
 app.get("/api/historico", (req, res) => {
     const mesa = estadoMesas["237"];
     res.json({
