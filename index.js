@@ -72,35 +72,35 @@ async function sincronizarPlanilha(type, tableId, payload) {
 // =====================================================
 // MOTOR ESTATÍSTICO & ACOMPANHAMENTO DE GREENS / REDS
 // =====================================================
+
 function avaliarGatilhosSetor(girosRecentes) {
-    let resultadosGatilhos = [];
+    const resultadosGatilhos = [];
     let gatilhoAtivoGeral = false;
 
     config.gatilhos.forEach(g => {
-        if (girosRecentes.length < g.janela) {
-            resultadosGatilhos.push({ nome: g.nome, janela: g.janela, atingido: false, saidasContadas: 0, alvoSaidas: g.alvoSaidas });
-            return;
-        }
+        const janela = girosRecentes.slice(0, g.janela);
+        const contSaidas = janela.filter(numero =>
+            SETOR_EQUILIBRIUM.includes(numero)
+        ).length;
 
-        let contSaidas = 0;
-        let jogadasJanela = 0;
+        const atingido =
+            janela.length === g.janela &&
+            contSaidas >= g.alvoSaidas;
 
-        for (let i = 0; i < girosRecentes.length; i++) {
-            if (SETOR_EQUILIBRIUM.includes(girosRecentes[i])) contSaidas++;
-            jogadasJanela++;
-            if (contSaidas === g.alvoSaidas) break;
-        }
-
-        let atingido = (contSaidas >= g.alvoSaidas && jogadasJanela <= g.janela);
         if (atingido) gatilhoAtivoGeral = true;
 
         resultadosGatilhos.push({
-            nome: g.nome, janela: g.janela, alvoSaidas: g.alvoSaidas,
-            saidasContadas: contSaidas, atingido: atingido
+            nome: g.nome,
+            janela: g.janela,
+            alvoSaidas: g.alvoSaidas,
+            saidasContadas: contSaidas,
+            atingido
         });
     });
 
     return { resultadosGatilhos, gatilhoAtivoGeral };
+}
+
 }
 
 let ultimoAlertaDisparadoAssinatura = "";
