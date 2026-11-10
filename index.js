@@ -1,6 +1,5 @@
 const express = require("express");
 const axios = require("axios");
-const cheerio = require("cheerio");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -8,6 +7,7 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json({ limit: "5mb" }));
 app.use(express.urlencoded({ extended: true, limit: "5mb" }));
 
+// Webhook do Google Sheets e Telegram
 const GAS_WEBHOOK_URL = process.env.GAS_WEBHOOK_URL || "https://script.google.com/macros/s/AKfycbyyWyc_z7InWOGkC4wIJ85fqPnlmsyuu9OeKHKFypcvgz_nw64I7JwcQqPrSwBA1eyh/exec";
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN || "9091680827:AAER8mF6-T5gJ8iL5VGK4EbCFCH4QY7lazc";
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || "824181525";
@@ -16,7 +16,7 @@ const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || "824181525";
 const SETOR_EQUILIBRIUM = [0, 32, 15, 19, 4, 21];
 
 const CATALOGO_MESAS = {
-    "237": { id: "237", nome: "⚡ Lightning Roulette (Casino.org)", ativa: true }
+    "237": { id: "237", nome: "⚡ Lightning Roulette (API)", ativa: true }
 };
 
 // CONFIGURAÇÃO DOS 5 GATILHOS OFICIAIS DA FASE 2A
@@ -35,11 +35,11 @@ const config = {
 const estadoMesas = {
     "237": {
         id: "237",
-        nome: "⚡ Lightning Roulette (Casino.org)",
+        nome: "⚡ Lightning Roulette",
         historico: [],
         contador: 0,
         carregado: false,
-        statusConexao: "🟢 Aguardando coleta automática...",
+        statusConexao: "🟢 Iniciando conexão com a API...",
         radar: []
     }
 };
@@ -153,17 +153,20 @@ function extrairNumeros(entrada) {
         .map(Number);
 }
 
+// Os números entram no formato [Mais_Recente, ..., Mais_Antigo]
 function processarNovosGiros(idMesa, numerosArray) {
     const mesa = estadoMesas[idMesa];
     if (!mesa) return;
 
     const agora = new Date().toISOString();
 
-    if (!mesa.carregado || numerosArray.length >= 100) {
+    // Primeira Carga (Preenche o Histórico Completo)
+    if (!mesa.carregado || numerosArray.length >= 25) {
         const base = numerosArray.slice(0, config.limiteHistorico);
         mesa.historico = [];
         mesa.contador = 0;
 
+        // Inverte para gravar do mais antigo para o mais novo, mantendo o índice 0 como o giro atual
         for (const num of base.slice().reverse()) {
             mesa.contador++;
             const gId = idMesa + "_G_" + String(mesa.contador).padStart(6, "0");
@@ -173,19 +176,21 @@ function processarNovosGiros(idMesa, numerosArray) {
                 number: num,
                 rawResult: String(num),
                 timestamp: agora,
-                origem: "casino_org"
+                origem: "api_direta"
             });
         }
 
         mesa.carregado = true;
-        mesa.statusConexao = "🟢 Conectado (Nuvem: " + mesa.historico.length + " giros | Últ: " + mesa.historico[0].number + ")";
+        mesa.statusConexao = "🟢 API Conectada (" + mesa.historico.length + " giros | Últ: " + mesa.historico[0].number + ")";
         sincronizarPlanilha("SYNC_BATCH", idMesa, { spins: mesa.historico });
         calcularRadarMesa(idMesa);
         return { modo: "CARGA_COMPLETA", total: mesa.historico.length };
     }
 
+    // Carga Contínua (Giros Ao Vivo)
     const inseridos = [];
-    for (const num of numerosArray) {
+    // Inverte a ordem para inserir o mais antigo primeiro, terminando no mais recente no topo do array
+    for (const num of numerosArray.slice().reverse()) {
         if (!Number.isInteger(num) || num < 0 || num > 36) continue;
         mesa.contador++;
         const gId = idMesa + "_G_" + String(mesa.contador).padStart(6, "0");
@@ -195,7 +200,7 @@ function processarNovosGiros(idMesa, numerosArray) {
             number: num,
             rawResult: String(num),
             timestamp: agora,
-            origem: "casino_org"
+            origem: "api_direta"
         };
         mesa.historico.unshift(giro);
         inseridos.push(giro);
@@ -205,66 +210,89 @@ function processarNovosGiros(idMesa, numerosArray) {
 
     mesa.historico = mesa.historico.slice(0, config.limiteHistorico);
     if (inseridos.length > 0) {
-        mesa.statusConexao = "🟢 Ao Vivo (Nuvem: " + mesa.historico.length + " giros | Últ: " + mesa.historico[0].number + ")";
+        mesa.statusConexao = "🟢 API Sincronizada (" + mesa.historico.length + " giros | Últ: " + mesa.historico[0].number + ")";
     }
     return { modo: "AO_VIVO", inseridos: inseridos.length };
 }
 
 // =====================================================
-// COLETOR AUTOMÁTICO - CASINO.ORG (SEM TAMPERMONKEY)
+// COLETOR AUTOMÁTICO - API DIRETA (JSON) SEM BLOQUEIOS
 // =====================================================
 let ultimaAssinaturaColetor = "";
 
 async function coletarResultadosAutomaticamente() {
     try {
-        const urlAlvo = "https://www.casino.org/casinoscores/pt-br/lightning-roulette/";
+        const mesa = estadoMesas["237"];
+        const urlAPI = "https://api-cs.casino.org/svc-evolution-game-events/api/lightningroulette?page=0&size=30&sort=data.settledAt,desc";
         
-        // Cabeçalhos forjados para simular um navegador real e evitar bloqueios
-        const response = await axios.get(urlAlvo, {
+        const response = await axios.get(urlAPI, {
             headers: { 
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-                "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7"
+                "Accept": "application/json",
+                "Origin": "https://www.casino.org",
+                "Referer": "https://www.casino.org/"
             },
-            timeout: 15000
+            timeout: 10000
         });
 
-        const $ = cheerio.load(response.data);
-        const numerosEncontrados = [];
+        if (response.data && response.data.content && Array.isArray(response.data.content)) {
+            // Extrai a lista limpa vinda da API (do mais novo para o mais antigo)
+            const numerosRecentes = response.data.content
+                .filter(item => item && item.data && item.data.result !== undefined)
+                .map(item => Number(item.data.result));
+            
+            if (numerosRecentes.length === 0) return;
 
-        // Filtro limpo usando o mesmo padrão que você testou no Console
-        $('*').each((i, el) => {
-            if ($(el).children().length === 0) {
-                const texto = $(el).text().trim();
-                if (/^(0|[1-9]|[12][0-9]|3[0-6])$/.test(texto)) {
-                    numerosEncontrados.push(Number(texto));
+            const assinaturaAtual = numerosRecentes.join(",");
+            if (assinaturaAtual === ultimaAssinaturaColetor) return; // Nenhuma novidade
+
+            // Se for a primeira vez, envia tudo
+            if (!mesa.carregado || mesa.historico.length === 0) {
+                processarNovosGiros("237", numerosRecentes);
+                ultimaAssinaturaColetor = assinaturaAtual;
+                console.log("🔄 [API INICIAL] Histórico carregado:", numerosRecentes.slice(0, 5));
+                return;
+            }
+
+            // Descobre quais são os giros novos comparando com a memória
+            let novosGiros = [];
+            let offset = -1;
+
+            // Procura a sobreposição verificando 3 números em sequência para evitar falhas com números repetidos (ex: duplo 4)
+            for (let i = 0; i < numerosRecentes.length; i++) {
+                if (numerosRecentes[i] === mesa.historico[0].number) {
+                    if (numerosRecentes[i+1] === mesa.historico[1]?.number && 
+                        numerosRecentes[i+2] === mesa.historico[2]?.number) {
+                        offset = i;
+                        break;
+                    }
                 }
             }
-        });
 
-        // Remove duplicidades consecutivas geradas pelo layout responsivo do site
-        let sequenciaLimpa = numerosEncontrados.filter((num, index, arr) => index === 0 || num !== arr[index - 1]);
-        
-        // Pega os últimos resultados válidos encontrados
-        const recentes = sequenciaLimpa.slice(0, 30);
-        if (recentes.length === 0) return;
+            if (offset > 0) {
+                // Pega apenas os números que estão antes da sobreposição (os verdadeiros novos)
+                novosGiros = numerosRecentes.slice(0, offset);
+                processarNovosGiros("237", novosGiros);
+                console.log("🔥 [API AO VIVO] Novos giros capturados:", novosGiros);
+            } else if (offset === -1 && numerosRecentes[0] !== mesa.historico[0].number) {
+                // Perdeu a sincronia (servidor ficou offline um tempo), recarrega tudo
+                mesa.carregado = false;
+                processarNovosGiros("237", numerosRecentes);
+                console.log("🔄 [API SYNC] Sincronia perdida, recarregando histórico completo.");
+            }
 
-        const assinaturaAtual = recentes.join(",");
-        if (assinaturaAtual !== ultimaAssinaturaColetor) {
-            processarNovosGiros("237", recentes);
             ultimaAssinaturaColetor = assinaturaAtual;
-            console.log("🔄 [COLETOR CASINO.ORG] Novos giros obtidos da nuvem:", recentes.slice(0, 5));
         }
     } catch (e) {
-        console.error("⚠️ [COLETOR CASINO.ORG] Erro ao buscar dados da página:", e.message);
+        console.error("⚠️ [COLETOR API] Erro de conexão com a fonte:", e.message);
     }
 }
 
-// Roda o coletor automático a cada 10 segundos na nuvem do Render
-setInterval(coletarResultadosAutomaticamente, 10000);
+// Roda o coletor automático a cada 8 segundos na nuvem do Render
+setInterval(coletarResultadosAutomaticamente, 8000);
 
 // =====================================================
-// ROTAS API
+// ROTAS API E PAINEL
 // =====================================================
 
 app.use((req, res, next) => {
@@ -314,10 +342,6 @@ app.get("/api/historico", (req, res) => {
     });
 });
 
-// =====================================================
-// PAINEL VIP EQUILIBRIUM COM HISTÓRICO (ROTA PRINCIPAL /)
-// =====================================================
-
 app.get("/", (req, res) => {
     const html = [
         "<!DOCTYPE html><html lang='pt-BR'><head><meta charset='UTF-8'>",
@@ -351,7 +375,7 @@ app.get("/", (req, res) => {
         
         "<div class='card'>",
         "<b style='color:var(--gold)'>📥 Inserir Giros Manuais (Teste)</b>",
-        "<textarea id='txtManual' rows='2' placeholder='Ex: 0, 32, 15, 19, 4, 21'></textarea>",
+        "<textarea id='txtManual' rows='2' placeholder='Ex: 10, 5, 32, 14, 19, 1'></textarea>",
         "<button onclick='enviarManual()'>ENVIAR GIROS</button>",
         "</div>",
         
@@ -397,10 +421,9 @@ app.get("/", (req, res) => {
         "hj.historico.forEach((item, index)=>{",
         "let tr=document.createElement('tr');",
         "let hora = new Date(item.timestamp).toLocaleTimeString();",
-        "tr.innerHTML=`<td>${index+1}</td><td><span class='bola-num'>${item.number}</span></td><td>${item.origem}</td><td>${hora}</td>`;",
+        "tr.innerHTML=`<td>${index+1}</td><td><span class='bola-num'>${item.number}</span></td><td><small>${item.origem}</small></td><td>${hora}</td>`;",
         "hbody.appendChild(tr);",
         "});",
-        
         "}catch(e){}",
         "}",
         
@@ -419,7 +442,7 @@ app.get("/", (req, res) => {
         "}",
         
         "carregarRadar();",
-        "setInterval(carregarRadar,4000);",
+        "setInterval(carregarRadar,3000);",
         "</script></body></html>"
     ].join("");
     res.send(html);
