@@ -8,12 +8,14 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json({ limit: "5mb" }));
 app.use(express.urlencoded({ extended: true, limit: "5mb" }));
 
-// Webhook do Google Sheets (Também funciona como Ponte Anti-Bloqueio!)
+// Webhook do Google Sheets e Telegram
 const GAS_WEBHOOK_URL = process.env.GAS_WEBHOOK_URL || "https://script.google.com/macros/s/AKfycbyyWyc_z7InWOGkC4wIJ85fqPnlmsyuu9OeKHKFypcvgz_nw64I7JwcQqPrSwBA1eyh/exec";
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN || "9091680827:AAER8mF6-T5gJ8iL5VGK4EbCFCH4QY7lazc";
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || "824181525";
 
-// O SETOR ALVO DEFINITIVO DO PROJETO EQUILIBRIUM (6 números)
+// =========================================================================
+// PROJETO EQUILIBRIUM: SETOR ALVO EXCLUSIVO [0, 32, 15, 19, 4, 21]
+// =========================================================================
 const SETOR_EQUILIBRIUM = [0, 32, 15, 19, 4, 21];
 
 const config = {
@@ -35,7 +37,7 @@ const estadoMesas = {
         historico: [],
         contador: 0,
         carregado: false,
-        statusConexao: "🟢 Iniciando motor de coleta...",
+        statusConexao: "🟢 Iniciando motor Equilibrium...",
         radar: [],
         ultimoDiagnostico: {}
     }
@@ -65,7 +67,7 @@ async function sincronizarPlanilha(type, tableId, payload) {
 }
 
 // =====================================================
-// MOTOR ESTATÍSTICO & GATILHOS
+// MOTOR ESTATÍSTICO EXCLUSIVO (SETOR EQUILIBRIUM)
 // =====================================================
 function avaliarGatilhosSetor(girosRecentes) {
     let resultadosGatilhos = [];
@@ -75,7 +77,7 @@ function avaliarGatilhosSetor(girosRecentes) {
         if (girosRecentes.length < g.janela) {
             resultadosGatilhos.push({
                 nome: g.nome, janela: g.janela, atingido: false,
-                girosGastos: 0, saidasContadas: 0, alvoSaidas: g.alvoSaidas
+                saidasContadas: 0, alvoSaidas: g.alvoSaidas
             });
             return;
         }
@@ -93,13 +95,18 @@ function avaliarGatilhosSetor(girosRecentes) {
         if (atingido) gatilhoAtivoGeral = true;
 
         resultadosGatilhos.push({
-            nome: g.nome, janela: g.janela, alvoSaidas: g.alvoSaidas,
-            girosGastos: jogadasJanela, saidasContadas: contSaidas, atingido: atingido
+            nome: g.nome,
+            janela: g.janela,
+            alvoSaidas: g.alvoSaidas,
+            saidasContadas: contSaidas,
+            atingido: atingido
         });
     });
 
     return { resultadosGatilhos, gatilhoAtivoGeral };
 }
+
+let ultimoAlertaDisparadoAssinatura = "";
 
 function calcularRadarMesa(idMesa, ultimoNumeroSorteado) {
     const mesa = estadoMesas[idMesa];
@@ -108,9 +115,22 @@ function calcularRadarMesa(idMesa, ultimoNumeroSorteado) {
     const girosRecentes = mesa.historico.map(h => h.number);
     const { resultadosGatilhos, gatilhoAtivoGeral } = avaliarGatilhosSetor(girosRecentes);
 
+    // Dispara alerta apenas para o Setor Equilibrium se o robô estiver ATIVO
     if (gatilhoAtivoGeral && config.statusRobo === "ATIVO" && ultimoNumeroSorteado !== undefined) {
         let ativadosStr = resultadosGatilhos.filter(g => g.atingido).map(g => g.nome).join(", ");
-        enviarTelegram(`🚨 *EQUILIBRIUM - SINAL DETECTADO!*\n🎯 Mesa: *${mesa.nome}*\n🔥 Gatilhos Ativos: *${ativadosStr}*\n📍 Setor Alvo: \`[0, 32, 15, 19, 4, 21]\`\n🎲 Último número: *${ultimoNumeroSorteado}*`);
+        let assinaturaAlerta = `${ativadosStr}_${girosRecentes[0]}`;
+
+        // Evita flood de mensagens repetidas para o mesmo gatilho consecutivo
+        if (assinaturaAlerta !== ultimoAlertaDisparadoAssinatura) {
+            enviarTelegram(
+                `🚨 *PROJETO EQUILIBRIUM - SINAL DETECTADO!*\n` +
+                `🎯 Mesa: *${mesa.nome}*\n` +
+                `🔥 Gatilhos Ativos: *${ativadosStr}*\n` +
+                `📍 Setor Alvo: \`[0, 32, 15, 19, 4, 21]\`\n` +
+                `🎲 Último número: *${ultimoNumeroSorteado}*`
+            );
+            ultimoAlertaDisparadoAssinatura = assinaturaAlerta;
+        }
     }
 
     mesa.radar = {
@@ -183,12 +203,11 @@ function processarNovosGiros(idMesa, numerosArray, origemNome = "auto_cloud") {
 }
 
 // =====================================================
-// EXTRATOR PROFUNDO UNIVERSAL (QUALQUER FORMATO JSON/HTML)
+// EXTRATOR UNIVERSAL DE DADOS DA API
 // =====================================================
 function extrairQualquerFormato(rawData) {
     if (!rawData) return [];
 
-    // Se já vier como array simples de números da Ponte Google
     if (Array.isArray(rawData) && rawData.every(x => typeof x === "number")) {
         return rawData.filter(n => n >= 0 && n <= 36);
     }
@@ -199,7 +218,6 @@ function extrairQualquerFormato(rawData) {
     const textoBruto = typeof rawData === "string" ? rawData : JSON.stringify(rawData);
     const numeros = [];
 
-    // 1. Tenta extrair via HTML se houver tags <span data-slot="badge">
     if (textoBruto.includes("data-slot")) {
         const $ = cheerio.load(textoBruto);
         $('span[data-slot="badge"]').each((i, el) => {
@@ -211,7 +229,6 @@ function extrairQualquerFormato(rawData) {
         }
     }
 
-    // 2. Busca por padrões JSON da Evolution Gaming ("result": 28, "winningNumber": 28, "number": 28)
     const padroes = [
         /"result"\s*:\s*\{\s*"outcome"\s*:\s*\{\s*"number"\s*:\s*"?(\d{1,2})"?/g,
         /"outcome"\s*:\s*\{\s*"number"\s*:\s*"?(\d{1,2})"?/g,
@@ -234,7 +251,7 @@ function extrairQualquerFormato(rawData) {
 }
 
 // =====================================================
-// COLETOR MULTI-ROTAS DE ALTA VELOCIDADE
+// COLETOR AUTOMÁTICO
 // =====================================================
 let ultimaAssinaturaColetor = "";
 let emExecucao = false;
@@ -244,40 +261,23 @@ async function coletarResultadosAutomaticamente() {
     emExecucao = true;
 
     const mesa = estadoMesas["237"];
-    // URL EXATA capturada no seu rastreador com duration=6 e isLightningNumberMatched=false
     const urlExataAPI = "https://api-cs.casino.org/svc-evolution-game-events/api/lightningroulette?page=0&size=24&sort=data.settledAt,desc&duration=6&isLightningNumberMatched=false";
-    const urlSimulator = "https://api-cs.casino.org/cg-neptune-game-show-simulator/api/simulator/lr";
 
     const rotas = [
-        {
-            nome: "Ponte_Google",
-            url: `${GAS_WEBHOOK_URL}?action=fetch_lr`,
-            headers: { "Accept": "application/json" }
-        },
         {
             nome: "API_Oficial_CasinoOrg",
             url: urlExataAPI,
             headers: {
-                "User-Agent": "Mozilla/5.0 (Linux; Android 14; SM-T735) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                "Accept": "application/json, text/plain, */*",
-                "Origin": "https://www.casino.org",
-                "Referer": "https://www.casino.org/casinoscores/pt-br/lightning-roulette/"
-            }
-        },
-        {
-            nome: "API_Simulator_LR",
-            url: urlSimulator,
-            headers: {
-                "User-Agent": "Mozilla/5.0 (Linux; Android 14; SM-T735) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "User-Agent": "Mozilla/5.0 (Linux; Android 14; SM-T735) AppleWebKit/537.36",
                 "Accept": "application/json",
                 "Origin": "https://www.casino.org",
                 "Referer": "https://www.casino.org/casinoscores/pt-br/lightning-roulette/"
             }
         },
         {
-            nome: "Proxy_CorsProxy",
-            url: `https://corsproxy.io/?${encodeURIComponent(urlExataAPI)}`,
-            headers: { "User-Agent": "Mozilla/5.0" }
+            nome: "Ponte_Google",
+            url: `${GAS_WEBHOOK_URL}?action=fetch_lr`,
+            headers: { "Accept": "application/json" }
         }
     ];
 
@@ -296,23 +296,16 @@ async function coletarResultadosAutomaticamente() {
             if (extraidos && extraidos.length > 0) {
                 recentes = extraidos;
                 rotaVencedora = rota.nome;
-                relatorioErros[rota.nome] = `OK (${extraidos.length} nums)`;
                 break;
-            } else {
-                const amostra = typeof response.data === "string" ? response.data.substring(0, 60) : JSON.stringify(response.data).substring(0, 60);
-                relatorioErros[rota.nome] = `Vazio [Amostra: ${amostra}]`;
             }
         } catch (err) {
-            relatorioErros[rota.nome] = err.response ? `HTTP ${err.response.status}` : err.message;
+            relatorioErros[rota.nome] = err.message;
         }
     }
 
-    mesa.ultimoDiagnostico = relatorioErros;
-
     try {
         if (!recentes || recentes.length === 0) {
-            const resumo = Object.entries(relatorioErros).map(([k, v]) => `${k}: ${v}`).join(" | ");
-            mesa.statusConexao = `🟡 Diagnóstico: ${resumo.substring(0, 110)}...`;
+            mesa.statusConexao = "🟡 Tentando reconectar com a mesa...";
             emExecucao = false;
             return;
         }
@@ -362,7 +355,7 @@ coletarResultadosAutomaticamente();
 setInterval(coletarResultadosAutomaticamente, 8000);
 
 // =====================================================
-// ROTAS API, DIAGNÓSTICO E PAINEL
+// ROTAS API E PAINEL
 // =====================================================
 app.use((req, res, next) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
@@ -370,11 +363,6 @@ app.use((req, res, next) => {
     res.setHeader("Access-Control-Allow-Headers", "Content-Type");
     if (req.method === "OPTIONS") return res.sendStatus(200);
     next();
-});
-
-// Rota para inspecionar o que cada fonte respondeu
-app.get("/api/debug", (req, res) => {
-    res.json(estadoMesas["237"].ultimoDiagnostico);
 });
 
 app.post("/api/spins", (req, res) => {
@@ -434,9 +422,9 @@ app.get("/", (req, res) => {
         "<option value='PAUSADO'>PAUSADO</option></select>",
         "<div style='font-size:13px;color:var(--green);margin-top:10px;font-weight:bold' id='lblConexoes'>Aguardando dados...</div></div>",
         "<div class='card'><b style='color:var(--gold)'>📥 Inserir Giros Manuais (Teste)</b>",
-        "<textarea id='txtManual' rows='2' placeholder='Ex: 10, 5, 32, 14, 19, 1'></textarea>",
+        "<textarea id='txtManual' rows='2' placeholder='Ex: 0, 32, 15, 19, 4, 21'></textarea>",
         "<button onclick='enviarManual()'>ENVIAR GIROS</button></div>",
-        "<div class='card'><b style='font-size:16px'>📊 Monitoramento dos Gatilhos (Setor: 0, 32, 15, 19, 4, 21)</b>",
+        "<div class='card'><b style='font-size:16px'>📊 Monitoramento dos Gatilhos (Setor Alvo: 0, 32, 15, 19, 4, 21)</b>",
         "<div id='statusAlertaGeral' class='badge normal' style='width:100%;text-align:center'>Aguardando histórico...</div>",
         "<table><thead><tr><th>Gatilho</th><th>Janela</th><th>Alvo</th><th>Contadas</th><th>Status</th></tr></thead>",
         "<tbody id='gatilhosBody'><tr><td colspan='5'>Sem dados...</td></tr></tbody></table></div>",
@@ -453,8 +441,7 @@ app.get("/", (req, res) => {
         "badgeEl.textContent=radar.statusAlerta; badgeEl.className='badge '+(radar.statusAlerta.includes('ATIVO')?'ativo':'normal');",
         "let tbody=document.getElementById('gatilhosBody'); tbody.innerHTML='';",
         "radar.gatilhos.forEach(g=>{ let tr=document.createElement('tr');",
-        "let alvo = g.alvoSaidas || (g.nome==='G7'?7:g.nome==='G8'?8:g.nome==='G9'?9:g.nome==='G10'?10:11);",
-        "tr.innerHTML=`<td><b>${g.nome}</b></td><td>${g.janela}</td><td>${alvo}</td><td><b>${g.saidasContadas}</b></td><td><span class='badge ${g.atingido?'ativo':'normal'}'>${g.atingido?'🔥 ATIVO':'Aguardando'}</span></td>`;",
+        "tr.innerHTML=`<td><b>${g.nome}</b></td><td>${g.janela}</td><td>${g.alvoSaidas}</td><td><b>${g.saidasContadas}</b></td><td><span class='badge ${g.atingido?'ativo':'normal'}'>${g.atingido?'🔥 ATIVO':'Aguardando'}</span></td>`;",
         "tbody.appendChild(tr);});",
         "let hr=await fetch('/api/historico'); let hj=await hr.json();",
         "let hbody=document.getElementById('historicoBody'); hbody.innerHTML='';",
