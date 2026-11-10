@@ -105,6 +105,7 @@ function avaliarGatilhosSetor(girosRecentes) {
 
 let ultimoAlertaDisparadoAssinatura = "";
 
+
 function calcularRadarMesa(idMesa, ultimoNumeroSorteado) {
     const mesa = estadoMesas[idMesa];
     if (!mesa || !mesa.historico.length) return { radar: [], alertaDisparado: false };
@@ -112,16 +113,22 @@ function calcularRadarMesa(idMesa, ultimoNumeroSorteado) {
     const girosRecentes = mesa.historico.map(h => h.number);
     const { resultadosGatilhos, gatilhoAtivoGeral } = avaliarGatilhosSetor(girosRecentes);
 
-    // Gestão de Entradas, Greens e Reds em tempo real
+    if (mesa.estatisticasDia.gatilhoBloqueado === undefined) {
+        mesa.estatisticasDia.gatilhoBloqueado = false;
+    }
+
+    let entradaFinalizadaNesteGiro = false;
+
     if (ultimoNumeroSorteado !== undefined) {
         const acertouSetor = SETOR_EQUILIBRIUM.includes(ultimoNumeroSorteado);
 
         if (mesa.estatisticasDia.emEntrada) {
             if (acertouSetor) {
-                // GREEN!
                 mesa.estatisticasDia.greens++;
                 mesa.estatisticasDia.emEntrada = false;
                 mesa.estatisticasDia.tirosGastos = 0;
+                mesa.estatisticasDia.gatilhoBloqueado = true;
+                entradaFinalizadaNesteGiro = true;
 
                 enviarTelegramParaTodos(
                     `✅ *GREEN NO SETOR EQUILIBRIUM!*\n` +
@@ -130,13 +137,14 @@ function calcularRadarMesa(idMesa, ultimoNumeroSorteado) {
                     `✅ Greens: ${mesa.estatisticasDia.greens} | ❌ Reds: ${mesa.estatisticasDia.reds}`
                 );
             } else {
-                // Errou o tiro, avança para o próximo (máximo de 3 entradas)
                 mesa.estatisticasDia.tirosGastos++;
+
                 if (mesa.estatisticasDia.tirosGastos >= 3) {
-                    // RED! Acabaram os tiros
                     mesa.estatisticasDia.reds++;
                     mesa.estatisticasDia.emEntrada = false;
                     mesa.estatisticasDia.tirosGastos = 0;
+                    mesa.estatisticasDia.gatilhoBloqueado = true;
+                    entradaFinalizadaNesteGiro = true;
 
                     enviarTelegramParaTodos(
                         `❌ *RED NO SETOR EQUILIBRIUM!*\n` +
@@ -148,25 +156,34 @@ function calcularRadarMesa(idMesa, ultimoNumeroSorteado) {
             }
         }
 
-        // Se o robô estiver ativo e houver gatilho disparado
-        if (gatilhoAtivoGeral && config.statusRobo === "ATIVO" && !mesa.estatisticasDia.emEntrada) {
-            let ativadosStr = resultadosGatilhos.filter(g => g.atingido).map(g => g.nome).join(", ");
-            let assinaturaAlerta = `${ativadosStr}_${girosRecentes[0]}`;
+        if (!gatilhoAtivoGeral) {
+            mesa.estatisticasDia.gatilhoBloqueado = false;
+        }
 
-            if (assinaturaAlerta !== ultimoAlertaDisparadoAssinatura) {
-                mesa.estatisticasDia.emEntrada = true;
-                mesa.estatisticasDia.tirosGastos = 0;
-                ultimoAlertaDisparadoAssinatura = assinaturaAlerta;
+        if (
+            gatilhoAtivoGeral &&
+            config.statusRobo === "ATIVO" &&
+            !mesa.estatisticasDia.emEntrada &&
+            !mesa.estatisticasDia.gatilhoBloqueado &&
+            !entradaFinalizadaNesteGiro
+        ) {
+            const ativadosStr = resultadosGatilhos
+                .filter(g => g.atingido)
+                .map(g => g.nome)
+                .join(", ");
 
-                enviarTelegramParaTodos(
-                    `🚨 *EQUILIBRIUM - SINAL DETECTADO!*\n` +
-                    `🎯 Mesa: *${mesa.nome}*\n` +
-                    `🔥 Gatilhos Ativos: *${ativadosStr}*\n` +
-                    `📍 Setor Alvo: \`[0, 32, 15, 19, 4, 21]\`\n` +
-                    `🎲 Último número: *${ultimoNumeroSorteado}*\n\n` +
-                    `🚨 *JOGAR NO SETOR (Fazer até 3 entradas)*`
-                );
-            }
+            mesa.estatisticasDia.emEntrada = true;
+            mesa.estatisticasDia.tirosGastos = 0;
+            mesa.estatisticasDia.gatilhoBloqueado = true;
+
+            enviarTelegramParaTodos(
+                `🚨 *EQUILIBRIUM - SINAL DETECTADO!*\n` +
+                `🎯 Mesa: *${mesa.nome}*\n` +
+                `🔥 Gatilhos Ativos: *${ativadosStr}*\n` +
+                `📍 Setor Alvo: \`[0, 32, 15, 19, 4, 21]\`\n` +
+                `🎲 Último número: *${ultimoNumeroSorteado}*\n\n` +
+                `🚨 *JOGAR NO SETOR (Fazer até 3 entradas)*`
+            );
         }
     }
 
