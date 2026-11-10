@@ -8,7 +8,7 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json({ limit: "5mb" }));
 app.use(express.urlencoded({ extended: true, limit: "5mb" }));
 
-// Webhook do Google Sheets e Telegram
+// Webhook do Google Sheets (Também funciona como Ponte Anti-Bloqueio!)
 const GAS_WEBHOOK_URL = process.env.GAS_WEBHOOK_URL || "https://script.google.com/macros/s/AKfycbyyWyc_z7InWOGkC4wIJ85fqPnlmsyuu9OeKHKFypcvgz_nw64I7JwcQqPrSwBA1eyh/exec";
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN || "9091680827:AAER8mF6-T5gJ8iL5VGK4EbCFCH4QY7lazc";
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || "824181525";
@@ -16,11 +16,6 @@ const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || "824181525";
 // O SETOR ALVO DEFINITIVO DO PROJETO EQUILIBRIUM (6 números)
 const SETOR_EQUILIBRIUM = [0, 32, 15, 19, 4, 21];
 
-const CATALOGO_MESAS = {
-    "237": { id: "237", nome: "⚡ Lightning Roulette", ativa: true }
-};
-
-// CONFIGURAÇÃO DOS 5 GATILHOS
 const config = {
     statusRobo: "ATIVO",
     limiteHistorico: 500,
@@ -40,13 +35,14 @@ const estadoMesas = {
         historico: [],
         contador: 0,
         carregado: false,
-        statusConexao: "🟢 Iniciando coletor multi-rotas...",
-        radar: []
+        statusConexao: "🟢 Iniciando motor de coleta...",
+        radar: [],
+        ultimoDiagnostico: {}
     }
 };
 
 // =====================================================
-// TELEGRAM COMUNICADOR
+// TELEGRAM & GOOGLE SHEETS
 // =====================================================
 async function enviarTelegram(texto) {
     if (!TELEGRAM_TOKEN || !TELEGRAM_CHAT_ID) return;
@@ -61,9 +57,6 @@ async function enviarTelegram(texto) {
     }
 }
 
-// =====================================================
-// SINCRONIZAÇÃO GOOGLE SHEETS
-// =====================================================
 async function sincronizarPlanilha(type, tableId, payload) {
     if (!GAS_WEBHOOK_URL) return;
     try {
@@ -131,7 +124,7 @@ function calcularRadarMesa(idMesa, ultimoNumeroSorteado) {
 }
 
 // =====================================================
-// PROCESSAMENTO DE ENTRADAS (SPINS)
+// PROCESSAMENTO DE GIROS
 // =====================================================
 function extrairNumeros(entrada) {
     if (Array.isArray(entrada)) {
@@ -162,7 +155,7 @@ function processarNovosGiros(idMesa, numerosArray, origemNome = "auto_cloud") {
         }
 
         mesa.carregado = true;
-        mesa.statusConexao = `🟢 Conectado via ${origemNome} (${mesa.historico.length} giros | Últ: ${mesa.historico[0].number})`;
+        mesa.statusConexao = `🟢 Conectado [${origemNome}] (${mesa.historico.length} giros | Últ: ${mesa.historico[0].number})`;
         sincronizarPlanilha("SYNC_BATCH", idMesa, { spins: mesa.historico });
         calcularRadarMesa(idMesa);
         return;
@@ -185,75 +178,63 @@ function processarNovosGiros(idMesa, numerosArray, origemNome = "auto_cloud") {
 
     mesa.historico = mesa.historico.slice(0, config.limiteHistorico);
     if (inseridos.length > 0) {
-        mesa.statusConexao = `🟢 Ao Vivo via ${origemNome} (${mesa.historico.length} giros | Últ: ${mesa.historico[0].number})`;
+        mesa.statusConexao = `🟢 Ao Vivo [${origemNome}] (${mesa.historico.length} giros | Últ: ${mesa.historico[0].number})`;
     }
 }
 
 // =====================================================
-// EXTRATORES INTELIGENTES (JSON + NEXT.JS + HTML BADGES)
+// EXTRATOR PROFUNDO UNIVERSAL (QUALQUER FORMATO JSON/HTML)
 // =====================================================
-function extrairDeJSON(rawData) {
+function extrairQualquerFormato(rawData) {
     if (!rawData) return [];
-    let dataObj = rawData;
-    if (typeof rawData === "string") {
-        try { dataObj = JSON.parse(rawData); } catch (e) { return []; }
+
+    // Se já vier como array simples de números da Ponte Google
+    if (Array.isArray(rawData) && rawData.every(x => typeof x === "number")) {
+        return rawData.filter(n => n >= 0 && n <= 36);
     }
-    if (dataObj && dataObj.contents && typeof dataObj.contents === "string") {
-        try { dataObj = JSON.parse(dataObj.contents); } catch (e) {}
+    if (rawData.numbers && Array.isArray(rawData.numbers)) {
+        return rawData.numbers.map(Number).filter(n => Number.isInteger(n) && n >= 0 && n <= 36);
     }
 
-    let lista = [];
-    if (Array.isArray(dataObj)) lista = dataObj;
-    else if (dataObj && Array.isArray(dataObj.content)) lista = dataObj.content;
-    else if (dataObj && Array.isArray(dataObj.data)) lista = dataObj.data;
-    else if (dataObj && Array.isArray(dataObj.results)) lista = dataObj.results;
-
-    const numeros = [];
-    for (const item of lista) {
-        let val = undefined;
-        if (item && item.data && item.data.result !== undefined) val = item.data.result;
-        else if (item && item.data && item.data.outcome && item.data.outcome.number !== undefined) val = item.data.outcome.number;
-        else if (item && item.result !== undefined) val = item.result;
-        else if (item && item.number !== undefined) val = item.number;
-        else if (item && item.winningNumber !== undefined) val = item.winningNumber;
-
-        const n = Number(val);
-        if (Number.isInteger(n) && n >= 0 && n <= 36) {
-            numeros.push(n);
-        }
-    }
-    return numeros;
-}
-
-function extrairDeHTML(htmlString) {
-    if (!htmlString || typeof htmlString !== "string") return [];
-    const $ = cheerio.load(htmlString);
+    const textoBruto = typeof rawData === "string" ? rawData : JSON.stringify(rawData);
     const numeros = [];
 
-    // 1. Procura nos spans com data-slot="badge" (os 2 locais que você identificou)
-    $('span[data-slot="badge"]').each((i, el) => {
-        const texto = $(el).text().trim();
-        if (/^(0|[1-9]|[12][0-9]|3[0-6])$/.test(texto)) {
-            numeros.push(Number(texto));
+    // 1. Tenta extrair via HTML se houver tags <span data-slot="badge">
+    if (textoBruto.includes("data-slot")) {
+        const $ = cheerio.load(textoBruto);
+        $('span[data-slot="badge"]').each((i, el) => {
+            const t = $(el).text().trim();
+            if (/^(0|[1-9]|[12][0-9]|3[0-6])$/.test(t)) numeros.push(Number(t));
+        });
+        if (numeros.length > 0) {
+            return numeros.filter((num, idx, arr) => idx === 0 || num !== arr[idx - 1]);
         }
-    });
+    }
 
-    // 2. Se o Next.js embutiu os giros em script JSON na página, extrai via Regex
-    if (numeros.length === 0) {
-        const regexResult = /"result"\s*:\s*"?(\d{1,2})"?/g;
+    // 2. Busca por padrões JSON da Evolution Gaming ("result": 28, "winningNumber": 28, "number": 28)
+    const padroes = [
+        /"result"\s*:\s*\{\s*"outcome"\s*:\s*\{\s*"number"\s*:\s*"?(\d{1,2})"?/g,
+        /"outcome"\s*:\s*\{\s*"number"\s*:\s*"?(\d{1,2})"?/g,
+        /"winningNumber"\s*:\s*"?(\d{1,2})"?/g,
+        /"result"\s*:\s*"?(\d{1,2})"?/g,
+        /"number"\s*:\s*"?(\d{1,2})"?/g
+    ];
+
+    for (const regex of padroes) {
         let match;
-        while ((match = regexResult.exec(htmlString)) !== null) {
+        const temp = [];
+        while ((match = regex.exec(textoBruto)) !== null) {
             const n = Number(match[1]);
-            if (n >= 0 && n <= 36) numeros.push(n);
+            if (Number.isInteger(n) && n >= 0 && n <= 36) temp.push(n);
         }
+        if (temp.length >= 5) return temp;
     }
 
-    // Remove duplicados seguidos gerados pelos 2 badges do mesmo giro no layout
-    return numeros.filter((num, idx, arr) => idx === 0 || num !== arr[idx - 1]);
+    return [];
 }
 
 // =====================================================
-// COLETOR AUTOMÁTICO MULTI-ROTAS (ANTI-CLOUDFLARE)
+// COLETOR MULTI-ROTAS DE ALTA VELOCIDADE
 // =====================================================
 let ultimaAssinaturaColetor = "";
 let emExecucao = false;
@@ -263,72 +244,75 @@ async function coletarResultadosAutomaticamente() {
     emExecucao = true;
 
     const mesa = estadoMesas["237"];
-    const timestamp = Date.now();
-    const apiTarget = `https://api-cs.casino.org/svc-evolution-game-events/api/lightningroulette?page=0&size=40&sort=data.settledAt,desc&_t=${timestamp}`;
-    const webTarget = `https://www.casino.org/casinoscores/pt-br/lightning-roulette/`;
+    // URL EXATA capturada no seu rastreador com duration=6 e isLightningNumberMatched=false
+    const urlExataAPI = "https://api-cs.casino.org/svc-evolution-game-events/api/lightningroulette?page=0&size=24&sort=data.settledAt,desc&duration=6&isLightningNumberMatched=false";
+    const urlSimulator = "https://api-cs.casino.org/cg-neptune-game-show-simulator/api/simulator/lr";
 
-    // 4 Rotas em Cascata (Direta + 3 Proxies Gratuitos para furar bloqueio de IP do Render)
     const rotas = [
         {
-            nome: "API_Direta",
-            tipo: "json",
-            url: apiTarget,
+            nome: "Ponte_Google",
+            url: `${GAS_WEBHOOK_URL}?action=fetch_lr`,
+            headers: { "Accept": "application/json" }
+        },
+        {
+            nome: "API_Oficial_CasinoOrg",
+            url: urlExataAPI,
             headers: {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                "Accept": "application/json",
+                "User-Agent": "Mozilla/5.0 (Linux; Android 14; SM-T735) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "Accept": "application/json, text/plain, */*",
                 "Origin": "https://www.casino.org",
-                "Referer": "https://www.casino.org/"
+                "Referer": "https://www.casino.org/casinoscores/pt-br/lightning-roulette/"
             }
         },
         {
-            nome: "Proxy_AllOrigins",
-            tipo: "json",
-            url: `https://api.allorigins.win/raw?url=${encodeURIComponent(apiTarget)}`,
-            headers: { "User-Agent": "Mozilla/5.0" }
+            nome: "API_Simulator_LR",
+            url: urlSimulator,
+            headers: {
+                "User-Agent": "Mozilla/5.0 (Linux; Android 14; SM-T735) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "Accept": "application/json",
+                "Origin": "https://www.casino.org",
+                "Referer": "https://www.casino.org/casinoscores/pt-br/lightning-roulette/"
+            }
         },
         {
-            nome: "Proxy_CodeTabs",
-            tipo: "json",
-            url: `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(apiTarget)}`,
-            headers: { "User-Agent": "Mozilla/5.0" }
-        },
-        {
-            nome: "HTML_Proxy",
-            tipo: "html",
-            url: `https://api.allorigins.win/raw?url=${encodeURIComponent(webTarget)}`,
+            nome: "Proxy_CorsProxy",
+            url: `https://corsproxy.io/?${encodeURIComponent(urlExataAPI)}`,
             headers: { "User-Agent": "Mozilla/5.0" }
         }
     ];
 
     let recentes = [];
     let rotaVencedora = "";
-    let ultimoErro = "";
+    const relatorioErros = {};
 
     for (const rota of rotas) {
         try {
             const response = await axios.get(rota.url, {
                 headers: rota.headers,
-                timeout: 10000
+                timeout: 6500
             });
 
-            if (rota.tipo === "json") {
-                recentes = extrairDeJSON(response.data);
-            } else {
-                recentes = extrairDeHTML(response.data);
-            }
-
-            if (recentes && recentes.length > 0) {
+            const extraidos = extrairQualquerFormato(response.data);
+            if (extraidos && extraidos.length > 0) {
+                recentes = extraidos;
                 rotaVencedora = rota.nome;
-                break; // Achou os números! Para de testar as outras rotas
+                relatorioErros[rota.nome] = `OK (${extraidos.length} nums)`;
+                break;
+            } else {
+                const amostra = typeof response.data === "string" ? response.data.substring(0, 60) : JSON.stringify(response.data).substring(0, 60);
+                relatorioErros[rota.nome] = `Vazio [Amostra: ${amostra}]`;
             }
         } catch (err) {
-            ultimoErro = `${rota.nome}: ${err.response ? err.response.status : err.message}`;
+            relatorioErros[rota.nome] = err.response ? `HTTP ${err.response.status}` : err.message;
         }
     }
 
+    mesa.ultimoDiagnostico = relatorioErros;
+
     try {
         if (!recentes || recentes.length === 0) {
-            mesa.statusConexao = `🟡 Tentando reconectar... (${ultimoErro || "Sem dados nas rotas"})`;
+            const resumo = Object.entries(relatorioErros).map(([k, v]) => `${k}: ${v}`).join(" | ");
+            mesa.statusConexao = `🟡 Diagnóstico: ${resumo.substring(0, 110)}...`;
             emExecucao = false;
             return;
         }
@@ -338,7 +322,7 @@ async function coletarResultadosAutomaticamente() {
 
         if (assinaturaAtual === ultimaAssinaturaColetor) {
             emExecucao = false;
-            return; // Nenhum giro novo desde a última leitura
+            return;
         }
 
         if (!mesa.carregado || mesa.historico.length === 0) {
@@ -348,7 +332,6 @@ async function coletarResultadosAutomaticamente() {
             return;
         }
 
-        // Sincronização inteligente: descobre quantos giros novos entraram
         let offset = -1;
         for (let i = 0; i < lote.length; i++) {
             if (lote[i] === mesa.historico[0].number) {
@@ -375,12 +358,11 @@ async function coletarResultadosAutomaticamente() {
     emExecucao = false;
 }
 
-// Dispara imediatamente ao ligar o servidor e repete a cada 8 segundos
 coletarResultadosAutomaticamente();
 setInterval(coletarResultadosAutomaticamente, 8000);
 
 // =====================================================
-// ROTAS API E PAINEL
+// ROTAS API, DIAGNÓSTICO E PAINEL
 // =====================================================
 app.use((req, res, next) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
@@ -388,6 +370,11 @@ app.use((req, res, next) => {
     res.setHeader("Access-Control-Allow-Headers", "Content-Type");
     if (req.method === "OPTIONS") return res.sendStatus(200);
     next();
+});
+
+// Rota para inspecionar o que cada fonte respondeu
+app.get("/api/debug", (req, res) => {
+    res.json(estadoMesas["237"].ultimoDiagnostico);
 });
 
 app.post("/api/spins", (req, res) => {
